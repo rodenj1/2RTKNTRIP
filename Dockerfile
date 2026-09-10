@@ -83,7 +83,7 @@ set -e\n\
 mkdir -p /app/logs /app/data /app/config\n\
 chown -R ntrip:ntrip /app/logs /app/data /app/config\n\
 \n\
-if [ ! -f "/app/config/config.ini" ]; then\n\
+if [ ! -f "/app/config/config.ini" ] && [ -f "/app/config.ini.example" ]; then\n\
     cp /app/config.ini.example /app/config/config.ini\n\
     chown ntrip:ntrip /app/config/config.ini\n\
 fi\n\
