@@ -21,11 +21,11 @@ ENV PATH="/root/.local/bin/:$PATH"
 # Set working directory
 WORKDIR /app
 
-# Copy project files
-COPY pyproject.toml uv.lock ./
+# Copy project files (source needed so the project + console script install)
+COPY . .
 
-# Install dependencies
-RUN uv sync --frozen --no-dev --no-install-project
+# Install dependencies + project (creates the ntrip-caster console script)
+RUN uv sync --frozen --no-dev
 
 # Production image
 FROM python:3.12-slim AS production
