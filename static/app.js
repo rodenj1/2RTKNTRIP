@@ -1198,45 +1198,6 @@ function getDashboardContent() {
             z-index: 1;
         }
         
-        /* Base Station Location map: OpenLayers renders into the target div's
-           box, so it must have an explicit non-zero height or nothing paints. */
-        .map-content {
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .map-container {
-            position: relative;
-            width: 100%;
-            height: 400px;
-            border-radius: 12px;
-            overflow: hidden;
-        }
-        
-        .map-display {
-            width: 100%;
-            height: 100%;
-        }
-        
-        .map-overlay {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            gap: 0.5rem;
-            color: #6c757d;
-            background: rgba(248, 249, 250, 0.85);
-            pointer-events: none;
-            z-index: 5;
-        }
-        
-        .map-overlay i {
-            font-size: 2rem;
-            opacity: 0.6;
-        }
-        
         .card-title {
             font-size: 0.8rem;
             color: #555;
