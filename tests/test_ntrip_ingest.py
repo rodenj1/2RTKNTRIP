@@ -11,6 +11,8 @@ forwarding, while v1.0 uploads stay byte-for-byte raw passthrough.
 
 from unittest.mock import MagicMock
 
+from pytest_mock import MockerFixture
+
 from ntrip_caster.ntrip import NTRIPHandler
 
 
@@ -20,7 +22,7 @@ def _framed(payload: bytes) -> bytes:
 
 
 def _drive_ingest(
-    mocker: MagicMock,
+    mocker: MockerFixture,
     ntrip_version: str,
     recv_buffers: list[bytes],
     mount: str = "TESTMOUNT",
@@ -51,33 +53,38 @@ def _drive_ingest(
     return bytes(forwarded)
 
 
-# A representative RTCM3 1005 frame: 0xD3 preamble, 10-byte length, payload, 3-byte CRC.
+# A representative RTCM3 1005 frame: 0xD3 preamble, 10-bit length field, payload, 3-byte CRC.
 # Fixed literal (independent source of truth), not recomputed by the code under test.
-RTCM_1005 = bytes.fromhex(
-    "d3000c3ed7d30203ff2e0000000000000000"
-)
+RTCM_1005 = bytes.fromhex("d3000c3ed7d30203ff2e0000000000000000")
 
 
-def test_v2_upload_is_dechunked_to_raw_rtcm(mocker: MagicMock) -> None:
+def test_v2_upload_is_dechunked_to_raw_rtcm(mocker: MockerFixture) -> None:
     payload = RTCM_1005
     forwarded = _drive_ingest(mocker, "2.0", [_framed(payload)])
     assert forwarded == payload
 
 
-def test_v2_equals_v1_for_same_payload(mocker: MagicMock) -> None:
+def test_v2_equals_v1_for_same_payload(mocker: MockerFixture) -> None:
     payload = RTCM_1005
     v1 = _drive_ingest(mocker, "1.0", [payload])
     v2 = _drive_ingest(mocker, "2.0", [_framed(payload)])
     assert v2 == v1 == payload
 
 
-def test_v1_upload_forwarded_verbatim(mocker: MagicMock) -> None:
+def test_v1_upload_forwarded_verbatim(mocker: MockerFixture) -> None:
     raw = b"\xd3\x00\x10rawrtcmbytes!!!!"
     forwarded = _drive_ingest(mocker, "1.0", [raw])
     assert forwarded == raw
 
 
-def test_v2_chunk_split_across_recv_buffers(mocker: MagicMock) -> None:
+def test_v08_upload_forwarded_verbatim(mocker: MockerFixture) -> None:
+    # NTRIP 0.8 uploads are raw like 1.0 — no decoder, byte-for-byte passthrough.
+    raw = b"\xd3\x00\x0808bytes!!"
+    forwarded = _drive_ingest(mocker, "0.8", [raw])
+    assert forwarded == raw
+
+
+def test_v2_chunk_split_across_recv_buffers(mocker: MockerFixture) -> None:
     payload = b"\xd3\x00\x08SPLITME!"
     frame = _framed(payload)
     # Split the single frame into three arbitrary recv() returns.
@@ -86,7 +93,7 @@ def test_v2_chunk_split_across_recv_buffers(mocker: MagicMock) -> None:
     assert forwarded == payload
 
 
-def test_v2_no_chunk_framing_bytes_leak(mocker: MagicMock) -> None:
+def test_v2_no_chunk_framing_bytes_leak(mocker: MockerFixture) -> None:
     # Two chunks whose hex-length markers ("3c", "5") would appear as CRC-fail
     # bytes if forwarded raw; assert they never reach the mount stream.
     a = b"A" * 0x3C
@@ -97,7 +104,7 @@ def test_v2_no_chunk_framing_bytes_leak(mocker: MagicMock) -> None:
     assert b"\r\n" not in forwarded
 
 
-def test_v2_terminal_chunk_ends_cleanly(mocker: MagicMock) -> None:
+def test_v2_terminal_chunk_ends_cleanly(mocker: MockerFixture) -> None:
     payload = b"\xd3\x00\x04DONE"
     forwarded = _drive_ingest(mocker, "2.0", [_framed(payload) + b"0\r\n\r\n"])
     assert forwarded == payload
