@@ -109,12 +109,17 @@ class WebManager:
             )
 
         # Create SocketIO instance
-        self.socketio = SocketIO(
-            self.app,
-            async_mode="gevent" if not config.settings.development.debug_mode else "threading",
-            ping_timeout=config.settings.websocket.ping_timeout,
-            ping_interval=config.settings.websocket.ping_interval,
-        )
+        socketio_kwargs: dict[str, Any] = {
+            "async_mode": "gevent" if not config.settings.development.debug_mode else "threading",
+            "ping_timeout": config.settings.websocket.ping_timeout,
+            "ping_interval": config.settings.websocket.ping_interval,
+        }
+        # Only set cors_allowed_origins when configured; otherwise leave it unset
+        # so python-socketio keeps its safe same-origin default. Never "*".
+        cors_origins = config.resolve_socketio_cors_origins(config.settings.websocket.cors_allowed_origins)
+        if cors_origins is not None:
+            socketio_kwargs["cors_allowed_origins"] = cors_origins
+        self.socketio = SocketIO(self.app, **socketio_kwargs)
 
         # Register routes and SocketIO events
         self._register_routes()
