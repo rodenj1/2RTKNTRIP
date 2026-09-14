@@ -116,9 +116,9 @@ class WebManager:
         }
         # Only set cors_allowed_origins when configured; otherwise leave it unset
         # so python-socketio keeps its safe same-origin default. Never "*".
-        _cors_origins = config.resolve_socketio_cors_origins(config.settings.websocket.cors_allowed_origins)
-        if _cors_origins is not None:
-            socketio_kwargs["cors_allowed_origins"] = _cors_origins
+        cors_origins = config.resolve_socketio_cors_origins(config.settings.websocket.cors_allowed_origins)
+        if cors_origins is not None:
+            socketio_kwargs["cors_allowed_origins"] = cors_origins
         self.socketio = SocketIO(self.app, **socketio_kwargs)
 
         # Register routes and SocketIO events

@@ -9,6 +9,8 @@ safe same-origin default); never a blanket "*".
 import os
 from pathlib import Path
 
+import pytest
+
 from ntrip_caster import config
 
 
@@ -29,8 +31,13 @@ def test_resolve_origins_returns_configured_list() -> None:
 
 def test_resolve_origins_never_wildcard() -> None:
     # A wildcard must never be emitted (credentialed connections).
-    assert config.resolve_socketio_cors_origins(["*"]) != "*"
-    assert "*" not in (config.resolve_socketio_cors_origins(["*"]) or [])
+    # A lone "*" strips to nothing -> None (falls back to same-origin).
+    assert config.resolve_socketio_cors_origins(["*"]) is None
+    # "*" mixed with real origins is dropped, keeping only the real ones.
+    resolved = config.resolve_socketio_cors_origins(["*", "https://ntrip-admin.big-spray.com"])
+    assert resolved is not None
+    assert resolved == ["https://ntrip-admin.big-spray.com"]
+    assert "*" not in resolved
 
 
 def test_cors_origins_from_json_config(tmp_path: Path) -> None:
@@ -49,7 +56,7 @@ def test_cors_origins_from_json_config(tmp_path: Path) -> None:
         del os.environ["NTRIP_CONFIG_FILE"]
 
 
-def test_cors_origins_from_env(monkeypatch) -> None:
+def test_cors_origins_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # pydantic-settings parses complex types (list) from JSON in the env var.
     monkeypatch.setenv(
         "NTRIP_CASTER_WEBSOCKET__CORS_ALLOWED_ORIGINS",
