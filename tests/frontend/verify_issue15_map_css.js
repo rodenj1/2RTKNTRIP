@@ -53,13 +53,23 @@ let failures = [];
 if (!mapContainer) failures.push("#map-container missing after monitor navigation");
 if (!mapDisplay) failures.push("#map (OpenLayers target) missing after monitor navigation");
 
+// The container must resolve to a real height from the persistent head stylesheet.
 if (mapContainer) {
   const h = dom.window.getComputedStyle(mapContainer).height;
-  // The persistent head stylesheet must give the container a real height.
-  if (!h || h === "0px" || h === "auto" || h === "") {
+  if (!h || h === "0px" || h === "auto") {
     failures.push(`#map-container height resolved to '${h}' (expected 400px) — CSS not persistent across nav`);
   } else if (h !== "400px") {
     failures.push(`#map-container height resolved to '${h}' (expected 400px)`);
+  }
+}
+
+// Assert the ACTUAL OpenLayers target (#map / .map-display) also gets a height —
+// criterion (1) names the #map container specifically. .map-display is height:100%,
+// so this confirms the cascade reaches the div OpenLayers paints into.
+if (mapDisplay) {
+  const dh = dom.window.getComputedStyle(mapDisplay).height;
+  if (!dh || dh === "0px" || dh === "auto") {
+    failures.push(`#map (OpenLayers target) height resolved to '${dh}' (expected non-zero) — .map-display rule not persistent`);
   }
 }
 
