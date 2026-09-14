@@ -740,14 +740,15 @@ let satelliteData = {};
 let frequencyMap = {};
 
 // freq_map
+// The frequency-overlay data file (static/freq_map.json) has never shipped in this
+// fork or upstream, so fetching it always 404s — and a browser logs that 404 to the
+// console/network panel regardless of try/catch. We therefore do NOT request it.
+// frequencyMap stays {} and getFrequencyInfo() degrades to {band:'Unknown',
+// freq:'Unknown'}, which is the existing behaviour. If a real freq_map.json is added
+// later, restore a guarded fetch here (e.g. HEAD-check or ship the file first).
 async function loadFrequencyMap() {
-    try {
-        const response = await fetch('/static/freq_map.json');
-        frequencyMap = await response.json();
-        // console.log('Frequency map loaded successfully');
-    } catch (error) {
-        // console.error('Frequency map loading failed:', error);
-    }
+    // Intentionally a no-op: no overlay data file exists to fetch. See note above.
+    return;
 }
 
 
