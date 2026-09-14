@@ -18,6 +18,7 @@ from threading import Thread
 from typing import Any
 
 from . import config, connection, forwarder, logger, metrics
+from .chunked import ChunkedDecoder
 from .database import DatabaseManager
 from .logger import log_debug, log_error, log_info, log_system_event, log_warning
 
@@ -882,7 +883,14 @@ class NTRIPHandler:
             self.send_error_response(500, "Internal Server Error")
 
     def _receive_rtcm_data(self, mount: str) -> None:
-        """Loop to receive RTCM data"""
+        """Loop to receive RTCM data.
+
+        NTRIP 2.0 servers upload the RTCM body wrapped in HTTP chunked
+        transfer-encoding; that framing must be stripped before forwarding or
+        the chunk markers corrupt the RTCM stream. v1.0/0.8 uploads are raw and
+        are forwarded verbatim.
+        """
+        decoder = ChunkedDecoder() if self.ntrip_version == "2.0" else None
         try:
             while True:
                 try:
@@ -890,6 +898,10 @@ class NTRIPHandler:
                     if not data:
                         log_debug(f"Mount point {mount} connection closed", "ntrip")
                         break
+                    if decoder is not None:
+                        data = decoder.feed(data)
+                        if not data:
+                            continue
                     forwarder.upload_data(mount, data)
                     metrics.DATA_THROUGHPUT.labels(mount=mount, direction="in").inc(len(data))
                     connection.get_connection_manager().update_mount_data_stats(mount, len(data))
