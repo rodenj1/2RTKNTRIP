@@ -7,6 +7,7 @@ edit can re-enable chunk framing without a matching Transfer-Encoding header
 (issue #4).
 """
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,7 +15,7 @@ import pytest
 from ntrip_caster.forwarder import SimpleDataForwarder
 
 
-def _client(protocol_version: str) -> tuple[dict, MagicMock]:
+def _client(protocol_version: str) -> tuple[dict[str, Any], MagicMock]:
     sock = MagicMock()
     info = {
         "socket": sock,
