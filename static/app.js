@@ -514,23 +514,13 @@ function displayStationInfo(stationData) {
 
 // Map related variables
 let currentMap = null;
-let mapType = 'amap'; // 'amap' or 'osm'
 let stationMarker = null;
 let coverageCircles = [];
 
 // Initialize map
 function initializeMap() {
-    // Set map switch button events
-    const amapBtn = document.getElementById('amap-btn');
-    const osmBtn = document.getElementById('osm-btn');
-    
-    amapBtn.addEventListener('click', () => switchToAmap());
-    osmBtn.addEventListener('click', () => switchToOSM());
-    
-    // Load map library by default
+    // OpenStreetMap is the only basemap; load the map library.
     loadMapLibrary();
-    
-    // Position data is now updated through simulated data
 }
 
 // Initialize map specifically for monitor page
@@ -550,23 +540,7 @@ function initializeMapForMonitor() {
     }
     
     // Set map switch button events (re-bind after page reload)
-    const amapBtn = document.getElementById('amap-btn');
-    const osmBtn = document.getElementById('osm-btn');
-    
-    if (amapBtn && osmBtn) {
-        // Remove existing event listeners to avoid duplicates
-        amapBtn.replaceWith(amapBtn.cloneNode(true));
-        osmBtn.replaceWith(osmBtn.cloneNode(true));
-        
-        // Re-get elements after replacement
-        const newAmapBtn = document.getElementById('amap-btn');
-        const newOsmBtn = document.getElementById('osm-btn');
-        
-        newAmapBtn.addEventListener('click', () => switchToAmap());
-        newOsmBtn.addEventListener('click', () => switchToOSM());
-        
-        console.log('[Map Init] Map switch button events rebound');
-    }
+    // OpenStreetMap is the only basemap; no map-switch buttons to bind.
     
     // Force re-initialize map
     if (typeof ol !== 'undefined') {
@@ -622,16 +596,16 @@ function initMap() {
         currentMap = null;
     }
     
-    // Create layer based on current map type
-    const layer = mapType === 'amap' ? createAmapLayer() : createOSMLayer();
+    // OpenStreetMap is the only basemap
+    const layer = createOSMLayer();
     
     try {
         currentMap = new ol.Map({
             target: 'map',
             layers: [layer],
             view: new ol.View({
-                center: ol.proj.fromLonLat([110.277492, 25.20341154]),
-                zoom: 8
+                center: ol.proj.fromLonLat([-98.5795, 39.8283]),
+                zoom: 4
             })
         });
         
@@ -642,20 +616,9 @@ function initMap() {
         currentMap.addLayer(markerLayer);
         
         console.log('[Map Init] Map instance created successfully');
-        updateMapButtons();
     } catch (error) {
         console.error('[Map Init] Failed to create map instance:', error);
     }
-}
-
-// Create Amap layer
-function createAmapLayer() {
-    return new ol.layer.Tile({
-        source: new ol.source.XYZ({
-            url: 'https://wprd01.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
-            crossOrigin: 'anonymous'
-        })
-    });
 }
 
 // Create OSM layer
@@ -665,107 +628,12 @@ function createOSMLayer() {
     });
 }
 
-// Switch to Amap
-function switchToAmap() {
-    if (mapType !== 'amap') {
-        mapType = 'amap';
-        mapSwitched = true; // Mark that map was switched
-        initMap();
-        // If we have position data, force re-marking
-        if (lastPosition.latitude !== null && lastPosition.longitude !== null) {
-            handlePositionUpdate(lastPosition.latitude, lastPosition.longitude);
-        }
-    }
-}
-
-// Switch to OSM
-function switchToOSM() {
-    if (mapType !== 'osm') {
-        mapType = 'osm';
-        mapSwitched = true; // Mark that map was switched
-        initMap();
-        // If we have position data, force re-marking
-        if (lastPosition.latitude !== null && lastPosition.longitude !== null) {
-            handlePositionUpdate(lastPosition.latitude, lastPosition.longitude);
-        }
-    }
-}
-
-// Update map button status
-function updateMapButtons() {
-    const amapBtn = document.getElementById('amap-btn');
-    const osmBtn = document.getElementById('osm-btn');
-    
-    if (mapType === 'amap') {
-        amapBtn.className = 'btn btn-primary btn-sm';
-        osmBtn.className = 'btn btn-secondary btn-sm';
-    } else {
-        amapBtn.className = 'btn btn-secondary btn-sm';
-        osmBtn.className = 'btn btn-primary btn-sm';
-    }
-}
-
-
-// Coordinate conversion: WGS84 to GCJ02
-function wgs84ToGcj02(lng, lat) {
-    const x_pi = 3.14159265358979324 * 3000.0 / 180.0;
-    const pi = 3.1415926535897932384626;
-    const a = 6378245.0; // Semi-major axis
-    const ee = 0.00669342162296594323; // Flattening
-    
-    // Check if outside China
-    function outOfChina(lng, lat) {
-        return (lng < 72.004 || lng > 137.8347) || (lat < 0.8293 || lat > 55.8271);
-    }
-    
-    function transformLat(lng, lat) {
-        let ret = -100.0 + 2.0 * lng + 3.0 * lat + 0.2 * lat * lat + 0.1 * lng * lat + 0.2 * Math.sqrt(Math.abs(lng));
-        ret += (20.0 * Math.sin(6.0 * lng * pi) + 20.0 * Math.sin(2.0 * lng * pi)) * 2.0 / 3.0;
-        ret += (20.0 * Math.sin(lat * pi) + 40.0 * Math.sin(lat / 3.0 * pi)) * 2.0 / 3.0;
-        ret += (160.0 * Math.sin(lat / 12.0 * pi) + 320 * Math.sin(lat * pi / 30.0)) * 2.0 / 3.0;
-        return ret;
-    }
-    
-    function transformLng(lng, lat) {
-        let ret = 300.0 + lng + 2.0 * lat + 0.1 * lng * lng + 0.1 * lng * lat + 0.1 * Math.sqrt(Math.abs(lng));
-        ret += (20.0 * Math.sin(6.0 * lng * pi) + 20.0 * Math.sin(2.0 * lng * pi)) * 2.0 / 3.0;
-        ret += (20.0 * Math.sin(lng * pi) + 40.0 * Math.sin(lng / 3.0 * pi)) * 2.0 / 3.0;
-        ret += (150.0 * Math.sin(lng / 12.0 * pi) + 300.0 * Math.sin(lng / 30.0 * pi)) * 2.0 / 3.0;
-        return ret;
-    }
-    
-    // If outside China, do not convert
-    if (outOfChina(lng, lat)) {
-        return [lng, lat];
-    }
-    
-    let dlat = transformLat(lng - 105.0, lat - 35.0);
-    let dlng = transformLng(lng - 105.0, lat - 35.0);
-    const radlat = lat / 180.0 * pi;
-    let magic = Math.sin(radlat);
-    magic = 1 - ee * magic * magic;
-    const sqrtmagic = Math.sqrt(magic);
-    dlat = (dlat * 180.0) / ((a * (1 - ee)) / (magic * sqrtmagic) * pi);
-    dlng = (dlng * 180.0) / (a / sqrtmagic * Math.cos(radlat) * pi);
-    const mglat = lat + dlat;
-    const mglng = lng + dlng;
-    return [mglng, mglat];
-}
-
 function updateMapLocation(latitude, longitude, mountName = null, isInitialMarking = false) {
     if (!currentMap) return;
     
-    // Decide whether to convert coordinates based on map type
-    let displayLng = longitude;
-    let displayLat = latitude;
-    
-    // If Amap, convert WGS84 to GCJ02
-    if (mapType === 'amap') {
-        const converted = wgs84ToGcj02(longitude, latitude);
-        displayLng = converted[0];
-        displayLat = converted[1];
-        console.log(`[Coord Conversion] WGS84: ${longitude}, ${latitude} -> GCJ02: ${displayLng}, ${displayLat}`);
-    }
+    // OpenStreetMap uses WGS84 (EPSG:4326) directly — no coordinate conversion.
+    const displayLng = longitude;
+    const displayLat = latitude;
     
     const center = ol.proj.fromLonLat([displayLng, displayLat]);
     currentMap.getView().setCenter(center);
@@ -1330,6 +1198,45 @@ function getDashboardContent() {
             z-index: 1;
         }
         
+        /* Base Station Location map: OpenLayers renders into the target div's
+           box, so it must have an explicit non-zero height or nothing paints. */
+        .map-content {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .map-container {
+            position: relative;
+            width: 100%;
+            height: 400px;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        
+        .map-display {
+            width: 100%;
+            height: 100%;
+        }
+        
+        .map-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            color: #6c757d;
+            background: rgba(248, 249, 250, 0.85);
+            pointer-events: none;
+            z-index: 5;
+        }
+        
+        .map-overlay i {
+            font-size: 2rem;
+            opacity: 0.6;
+        }
+        
         .card-title {
             font-size: 0.8rem;
             color: #555;
@@ -1601,10 +1508,6 @@ function getMonitorContent() {
                             <div class="map-overlay" id="map-loading">
                                 <i class="fas fa-map"></i>
                                 <p>Waiting for location data...</p>
-                            </div>
-                            <div id="map-switch" class="map-switch-floating">
-                                <button id="amap-btn" class="btn btn-sm btn-primary">Amap</button>
-                                <button id="osm-btn" class="btn btn-sm btn-secondary">OpenStreetMap</button>
                             </div>
                         </div>
                     </div>
