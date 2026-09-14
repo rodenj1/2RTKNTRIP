@@ -162,6 +162,23 @@ class WebsocketConfig(BaseModel):
     enabled: bool = True
     ping_timeout: int = 120
     ping_interval: int = 15
+    # Socket.IO CORS allowed origins. Empty => same-origin only (python-socketio
+    # default). Set to the external ingress hostname(s) when the admin dashboard
+    # is served through a reverse proxy, e.g.
+    #   NTRIP_CASTER_WEBSOCKET__CORS_ALLOWED_ORIGINS='["https://ntrip-admin.example.com"]'
+    # A blanket "*" is deliberately never emitted (credentialed connections).
+    cors_allowed_origins: list[str] = []
+
+
+def resolve_socketio_cors_origins(origins: list[str]) -> list[str] | None:
+    """Map the configured allowed-origins list to the SocketIO argument.
+
+    Returns None when no origins are configured, so python-socketio keeps its
+    safe same-origin default. Any wildcard entry is stripped — a blanket "*" is
+    never passed, because the admin session uses credentialed connections.
+    """
+    filtered = [o for o in origins if o and o != "*"]
+    return filtered or None
 
 
 # ==================== Reserved ====================
