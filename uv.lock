@@ -383,6 +383,18 @@ wheels = [
 ]
 
 [[package]]
+name = "gevent-websocket"
+version = "0.10.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "gevent" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/98/d2/6fa19239ff1ab072af40ebf339acd91fb97f34617c2ee625b8e34bf42393/gevent-websocket-0.10.1.tar.gz", hash = "sha256:7eaef32968290c9121f7c35b973e2cc302ffb076d018c9068d2f5ca8b2d85fb0", size = 18366, upload-time = "2017-03-12T22:46:05.68Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/84/2dc373eb6493e00c884cc11e6c059ec97abae2678d42f06bf780570b0193/gevent_websocket-0.10.1-py3-none-any.whl", hash = "sha256:17b67d91282f8f4c973eba0551183fc84f56f1c90c8f6b6b30256f31f66f5242", size = 22987, upload-time = "2017-03-12T22:46:03.611Z" },
+]
+
+[[package]]
 name = "greenlet"
 version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -720,6 +732,7 @@ dependencies = [
     { name = "flask-login" },
     { name = "flask-socketio" },
     { name = "gevent" },
+    { name = "gevent-websocket" },
     { name = "gunicorn" },
     { name = "prometheus-client" },
     { name = "psutil" },
@@ -761,6 +774,7 @@ requires-dist = [
     { name = "flask-login", specifier = ">=0.6.3" },
     { name = "flask-socketio", specifier = "==5.3.6" },
     { name = "gevent", specifier = ">=25.9.1" },
+    { name = "gevent-websocket", specifier = ">=0.10.1" },
     { name = "gunicorn", specifier = ">=24.1.1" },
     { name = "prometheus-client", specifier = ">=0.24.1" },
     { name = "psutil", specifier = "==5.9.5" },

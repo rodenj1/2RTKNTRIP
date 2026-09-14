@@ -11,6 +11,12 @@ dependencies = [
     "flask-login>=0.6.3",
     "flask-socketio==5.3.6",
     "gevent>=25.9.1",
+    # Enables Flask-SocketIO's native WebSocket transport on the gevent server
+    # path (its gevent branch imports geventwebsocket.handler.WebSocketHandler);
+    # without it the live feed falls back to HTTP long-polling. NOTE: this package
+    # is unmaintained (last release 0.10.1, 2017) but is the only one that
+    # satisfies that specific import — simple-websocket does not exercise it.
+    "gevent-websocket>=0.10.1",
     "gunicorn>=24.1.1",
     "prometheus-client>=0.24.1",
     "psutil==5.9.5",
