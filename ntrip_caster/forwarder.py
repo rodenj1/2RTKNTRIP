@@ -387,23 +387,24 @@ class SimpleDataForwarder:
             raise
 
     def _send_data_simple(self, client_info: dict[str, Any], data_list: list[tuple[float, bytes]]) -> int:
-        """Simple data send method"""
+        """Simple data send method.
+
+        NTRIP downloads are intentionally un-chunked: every client is served the
+        raw RTCM octet-stream, which is what real-world NTRIP v2 clients tolerate
+        and what this caster already serves successfully (the v2 200 OK response
+        deliberately omits Transfer-Encoding: chunked). Do NOT reintroduce
+        chunked encoding here without also adding that response header and a
+        terminal 0-chunk on stream end (see issue #1's download-path note) — a
+        chunk marker sent while the response claims "not chunked" corrupts the
+        rover stream.
+        """
         try:
             socket_obj = client_info["socket"]
-            protocol_version = client_info["protocol_version"]
             total_bytes_sent = 0
 
             for timestamp, data in data_list:
-                if protocol_version == "ntrip2_0":
-                    # NTRIP 2.0 uses chunked encoding
-                    chunk_size = hex(len(data))[2:].upper().encode("ascii")
-                    chunk_data = chunk_size + b"\r\n" + data + b"\r\n"
-                    socket_obj.sendall(chunk_data)
-                    total_bytes_sent += len(chunk_data)
-                else:
-                    # NTRIP 1.0 sends directly
-                    socket_obj.sendall(data)
-                    total_bytes_sent += len(data)
+                socket_obj.sendall(data)
+                total_bytes_sent += len(data)
 
             return total_bytes_sent
 
