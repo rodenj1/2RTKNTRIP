@@ -746,9 +746,8 @@ let frequencyMap = {};
 // frequencyMap stays {} and getFrequencyInfo() degrades to {band:'Unknown',
 // freq:'Unknown'}, which is the existing behaviour. If a real freq_map.json is added
 // later, restore a guarded fetch here (e.g. HEAD-check or ship the file first).
-async function loadFrequencyMap() {
+function loadFrequencyMap() {
     // Intentionally a no-op: no overlay data file exists to fetch. See note above.
-    return;
 }
 
 
