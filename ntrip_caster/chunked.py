@@ -47,17 +47,20 @@ class ChunkedDecoder:
         return self._state == self._DONE
 
     def feed(self, data: bytes) -> bytes:
-        """Consume ``data`` and return any de-chunked payload it completes."""
-        if not data:
+        """Consume ``data`` and return any de-chunked payload it completes.
+
+        Once the terminal chunk has been consumed (:attr:`complete`), any
+        further bytes are ignored and ``b""`` is returned, so a benign trailing
+        or pipelined read never corrupts the output stream.
+        """
+        if not data or self._state == self._DONE:
             return b""
-        if self._state == self._DONE:
-            raise ChunkedDecoderError("data received after terminal chunk")
 
         out = bytearray()
         pos = 0
         length = len(data)
 
-        while pos < length:
+        while pos < length and self._state != self._DONE:
             if self._state == self._SIZE:
                 pos = self._consume_line(data, pos, self._on_size_line)
             elif self._state == self._DATA:
@@ -71,8 +74,6 @@ class ChunkedDecoder:
                 pos = self._consume_line(data, pos, self._on_data_crlf)
             elif self._state == self._TRAILER:
                 pos = self._consume_line(data, pos, self._on_trailer_line)
-            elif self._state == self._DONE:
-                raise ChunkedDecoderError("data received after terminal chunk")
 
         return bytes(out)
 

@@ -75,16 +75,13 @@ def test_terminal_chunk_signals_completion() -> None:
     assert decoder.complete
 
 
-def test_bytes_after_terminal_chunk_are_rejected() -> None:
-    import pytest
-
-    from ntrip_caster.chunked import ChunkedDecoderError
-
+def test_bytes_after_terminal_chunk_are_ignored() -> None:
     decoder = ChunkedDecoder()
     decoder.feed(b"0\r\n\r\n")
     assert decoder.complete
-    with pytest.raises(ChunkedDecoderError):
-        decoder.feed(_frame(b"garbage"))
+    # Trailing / pipelined bytes after end-of-stream must not corrupt output.
+    assert decoder.feed(_frame(b"garbage")) == b""
+    assert decoder.complete
 
 
 def test_trailer_headers_after_terminal_chunk_do_not_corrupt_output() -> None:
