@@ -785,7 +785,11 @@ class NTRIPHandler:
             log_info(f"Validation result for {self.client_address}: is_valid={is_valid}, message={message}")
 
             if not is_valid:
-                log_warning(f"handle_upload authentication failed for {self.client_address}: {message}")
+                log_warning(
+                    f"NTRIP auth failure: ip={self.client_address[0]} mount={mount} "
+                    f"user={self.username or '-'} type=upload reason={message}",
+                    "ntrip",
+                )
                 metrics.AUTH_ATTEMPTS.labels(status="failed", type="mount").inc()
                 self.send_auth_challenge(message)
                 try:
@@ -838,6 +842,11 @@ class NTRIPHandler:
             is_valid, message = self.verify_user(mount, auth_header, "download")
             if not is_valid:
                 metrics.AUTH_ATTEMPTS.labels(status="failed", type="user").inc()
+                log_warning(
+                    f"NTRIP auth failure: ip={self.client_address[0]} mount={mount} "
+                    f"user={self.username or '-'} type=download reason={message}",
+                    "ntrip",
+                )
                 self.send_auth_challenge(message)
                 return
             if not self.db_manager.check_mount_exists_in_db(mount):
@@ -1265,6 +1274,19 @@ class NTRIPCaster:
     def _handle_client_connection(self, client_socket: socket.socket, client_address: tuple[str, int]) -> None:
         """Handle individual client connection"""
         try:
+            # Optional PROXY protocol v2: when enabled AND the connection begins
+            # with a PROXY v2 header (prepended by a fronting proxy), recover the
+            # REAL client address. When disabled, or when no header is present,
+            # client_address is left as-is so plain/direct connections still work.
+            if config.settings.network.proxy_protocol:
+                try:
+                    from . import proxy_protocol
+
+                    result = proxy_protocol.parse_proxy_v2(client_socket)
+                    if result.consumed and result.real_addr is not None:
+                        client_address = result.real_addr
+                except Exception as e:
+                    log_warning(f"PROXY protocol parse failed for {client_address}: {e}", "ntrip")
             handler = NTRIPHandler(client_socket, client_address, self.db_manager)
             handler.handle_request()
         except Exception as e:

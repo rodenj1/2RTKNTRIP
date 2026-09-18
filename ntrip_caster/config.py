@@ -51,6 +51,14 @@ class NetworkConfig(BaseModel):
     max_connections: int = 5000  # Maximum connections
     buffer_size: int = 81920  # Buffer size (80KB)
     max_buffer_size: int = 655360  # Maximum buffer size (640KB)
+    # Optional PROXY protocol v2 support on the NTRIP listener. Default OFF: the
+    # listener behaves exactly as a plain TCP listener and works with NO proxy in
+    # front. Enable ONLY when the caster is fronted by a proxy that PREPENDS a
+    # PROXY v2 header (e.g. a Traefik TCP entrypoint with proxyProtocol, or HAProxy
+    # send-proxy-v2) so the real client IP is recovered instead of the proxy's IP.
+    # Even when enabled, a connection WITHOUT a PROXY header still works (the bytes
+    # are treated as a normal request), so mixed/internal paths do not break.
+    proxy_protocol: bool = False
 
 
 # ==================== NTRIP Protocol Configuration ====================
