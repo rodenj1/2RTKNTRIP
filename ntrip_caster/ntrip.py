@@ -61,11 +61,17 @@ class NTRIPHandler:
     """NTRIP Request Handler"""
 
     def __init__(
-        self, client_socket: socket.socket, client_address: tuple[str, int], db_manager: DatabaseManager
+        self, client_socket: socket.socket, client_address: tuple[str, int], db_manager: DatabaseManager,
+        initial_bytes: bytes = b""
     ) -> None:
         self.client_socket: socket.socket = client_socket
         self.client_address: tuple[str, int] = client_address
         self.db_manager: DatabaseManager = db_manager
+        # Bytes already read off the socket before the handler runs (e.g. bytes
+        # peeked while sniffing for a PROXY-v2 header on a non-PROXY connection).
+        # They belong to the real request and must be processed as if they were
+        # the first bytes recv()'d — see handle_request().
+        self.initial_bytes: bytes = initial_bytes
         self.ntrip_version: str = "1.0"
         self.protocol_type: str = "ntrip1_0"
         self.user_agent: str = ""
@@ -122,7 +128,8 @@ class NTRIPHandler:
         """Handle NTRIP request with enhanced validation and error handling"""
         try:
             log_debug(f"=== Starting request handling {self.client_address} ===")
-            request_data = self.client_socket.recv(config.settings.network.buffer_size).decode("utf-8", errors="ignore")
+            raw = self.initial_bytes + self.client_socket.recv(config.settings.network.buffer_size)
+            request_data = raw.decode("utf-8", errors="ignore")
             if not request_data:
                 log_debug(f"Client {self.client_address} sent empty request")
                 return
@@ -1278,6 +1285,7 @@ class NTRIPCaster:
             # with a PROXY v2 header (prepended by a fronting proxy), recover the
             # REAL client address. When disabled, or when no header is present,
             # client_address is left as-is so plain/direct connections still work.
+            initial_bytes = b""
             if config.settings.network.proxy_protocol:
                 try:
                     from . import proxy_protocol
@@ -1285,9 +1293,14 @@ class NTRIPCaster:
                     result = proxy_protocol.parse_proxy_v2(client_socket)
                     if result.consumed and result.real_addr is not None:
                         client_address = result.real_addr
+                    # Bytes read past (or instead of) a PROXY header belong to the
+                    # real request — hand them to the handler so they aren't lost.
+                    # On a NON-PROXY connection this is the 16 bytes peeked for the
+                    # signature; dropping them corrupts the request line.
+                    initial_bytes = result.leftover
                 except Exception as e:
                     log_warning(f"PROXY protocol parse failed for {client_address}: {e}", "ntrip")
-            handler = NTRIPHandler(client_socket, client_address, self.db_manager)
+            handler = NTRIPHandler(client_socket, client_address, self.db_manager, initial_bytes=initial_bytes)
             handler.handle_request()
         except Exception as e:
             log_error(f"Exception handling client {client_address}: {e}", exc_info=True)
