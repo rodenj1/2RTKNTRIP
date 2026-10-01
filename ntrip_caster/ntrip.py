@@ -86,6 +86,8 @@ class NTRIPHandler:
         self.current_method: str = "GET"
         self.mount_connection_established: bool = False
         self.client_info: dict[str, Any] | None = None
+        # Whether this upload's body is HTTP-chunked (it said Transfer-Encoding: chunked).
+        self.upload_chunked: bool = False
         # This download's per-user slot, once taken. Releasing it again is a no-op.
         self.connection_id: str | None = None
 
@@ -723,6 +725,8 @@ class NTRIPHandler:
                 self._reject_upload_mount(400, "Missing mount point")
                 return
             self.mount = mount
+            transfer_codings = headers.get("transfer-encoding", "").lower().split(",")
+            self.upload_chunked = "chunked" in (coding.strip() for coding in transfer_codings)
 
             if connection.get_connection_manager().is_mount_online(mount):
                 existing_mount = connection.get_connection_manager().get_mount_info(mount)
@@ -870,12 +874,12 @@ class NTRIPHandler:
     def _receive_rtcm_data(self, mount: str) -> None:
         """Loop to receive RTCM data.
 
-        NTRIP 2.0 servers upload the RTCM body wrapped in HTTP chunked
-        transfer-encoding; that framing must be stripped before forwarding or
-        the chunk markers corrupt the RTCM stream. v1.0/0.8 uploads are raw and
-        are forwarded verbatim.
+        An upload whose request said ``Transfer-Encoding: chunked`` (as NTRIP 2.0
+        servers usually do) has its body wrapped in HTTP chunked framing, which
+        must be stripped before forwarding or the chunk markers corrupt the RTCM
+        stream. Any other upload, whatever its version, is raw and forwarded verbatim.
         """
-        decoder = ChunkedDecoder() if self.ntrip_version == "2.0" else None
+        decoder = ChunkedDecoder() if self.upload_chunked else None
         try:
             while True:
                 try:
