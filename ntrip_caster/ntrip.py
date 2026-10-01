@@ -22,6 +22,11 @@ from .chunked import ChunkedDecoder
 from .database import DatabaseManager
 from .logger import log_debug, log_error, log_info, log_system_event, log_warning
 
+# NTRIP 2.0 reply header values (RTCM 10410.1; matched exactly by BKG's ntripclient/ntripserver).
+NTRIP_V2_VERSION_HEADER = "Ntrip-Version: Ntrip/2.0"
+NTRIP_V2_STREAM_CONTENT_TYPE = "gnss/data"
+NTRIP_V2_SOURCETABLE_CONTENT_TYPE = "gnss/sourcetable"
+
 
 class AntiSpamLogger:
     def __init__(self, time_window: int = 60, max_count: int = 5) -> None:
@@ -943,9 +948,9 @@ class NTRIPHandler:
                     "HTTP/1.1 200 OK",
                     f"Server: NTRIP 2RTK caster {config.settings.app.version}",
                     f"Date: {current_time}",
-                    "Ntrip-Version: Ntrip/2.0",
+                    NTRIP_V2_VERSION_HEADER,
                     f"Content-Length: {len(content_str.encode('utf-8'))}",
-                    "Content-Type: text/plain",
+                    f"Content-Type: {NTRIP_V2_SOURCETABLE_CONTENT_TYPE}",
                     "Connection: close",
                     "",
                     content_str,
@@ -993,7 +998,7 @@ class NTRIPHandler:
         if self.ntrip_version == "2.0":
             self._send_response(
                 "HTTP/1.1 200 OK",
-                content_type="application/octet-stream",
+                content_type=NTRIP_V2_STREAM_CONTENT_TYPE,
                 additional_headers=["Connection: keep-alive"],
             )
         else:
@@ -1055,7 +1060,7 @@ class NTRIPHandler:
         if self.protocol_type == "ntrip2_0":
             headers.extend(
                 [
-                    "Ntrip-Version: NTRIP/2.0",
+                    NTRIP_V2_VERSION_HEADER,
                     "Cache-Control: no-cache, no-store, must-revalidate",
                     "Pragma: no-cache",
                     "Expires: 0",
@@ -1064,7 +1069,7 @@ class NTRIPHandler:
         elif self.protocol_type == "rtsp":
             headers.extend(["CSeq: 1", f"Session: {id(self)}"])
         elif self.ntrip_version == "2.0":
-            headers.append("Ntrip-Version: NTRIP/2.0")
+            headers.append(NTRIP_V2_VERSION_HEADER)
         headers.extend(
             [
                 f"Date: {current_time}",
