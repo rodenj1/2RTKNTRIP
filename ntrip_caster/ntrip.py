@@ -86,6 +86,8 @@ class NTRIPHandler:
         self.current_method: str = "GET"
         self.mount_connection_established: bool = False
         self.client_info: dict[str, Any] | None = None
+        # This download's per-user slot, once taken. Releasing it again is a no-op.
+        self.connection_id: str | None = None
 
         self.client_socket.settimeout(config.settings.tcp.socket_timeout)
         self._configure_keepalive()
@@ -834,29 +836,33 @@ class NTRIPHandler:
                 )
                 self.send_auth_challenge(message)
                 return
-            connection_id = connection.add_user_connection(self.username, mount, self.client_address[0])
+            self.connection_id = connection.add_user_connection(self.username, mount, self.client_address[0])
+            streaming = False
             try:
-                self.client_info = forwarder.add_client(
-                    self.client_socket,
-                    self.username,
-                    mount,
-                    self.user_agent,
-                    self.client_address,
-                    self.ntrip_version,
-                    connection_id,
-                )
+                try:
+                    self.client_info = forwarder.add_client(
+                        self.client_socket,
+                        self.username,
+                        mount,
+                        self.user_agent,
+                        self.client_address,
+                        self.ntrip_version,
+                        self.connection_id,
+                    )
+                except Exception as e:
+                    log_error(f"Failed to add client: {e}", exc_info=True)
+                    self.client_info = None
                 if not self.client_info:
                     self.send_error_response(500, "Failed to add client")
                     return
-            except Exception as e:
-                log_error(f"Failed to add client: {e}", exc_info=True)
-                self.send_error_response(500, "Failed to add client")
-                return
-            self.send_download_success_response()
-            metrics.AUTH_ATTEMPTS.labels(status="success", type="user").inc()
-            metrics.ACTIVE_CONNECTIONS.labels(type="client").inc()
-            logger.log_client_connect(self.username, mount, self.client_address[0], self.user_agent)
-            self._keep_connection_alive()
+                self.send_download_success_response()
+                metrics.AUTH_ATTEMPTS.labels(status="success", type="user").inc()
+                metrics.ACTIVE_CONNECTIONS.labels(type="client").inc()
+                streaming = True
+                logger.log_client_connect(self.username, mount, self.client_address[0], self.user_agent)
+                self._keep_connection_alive()
+            finally:
+                self._end_download(streaming)
         except Exception as e:
             logger.log_error(f"Exception handling download request: {e}", exc_info=True)
             self.send_error_response(500, "Internal Server Error")
@@ -922,24 +928,35 @@ class NTRIPHandler:
             self._cleanup()
 
     def _keep_connection_alive(self) -> None:
-        """Keep download connection alive"""
+        """Hold a download open until the client closes it or its socket fails.
+
+        Reading is how a closed client is noticed (EOF, or an error once the
+        caster has closed the socket); anything a rover sends upstream, such as
+        GGA, is read and discarded.
+        """
         try:
-            while True:
-                time.sleep(5)
-                if hasattr(self, "client_info") and self.client_info:
-                    try:
-                        self.client_socket.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
-                    except (OSError, AttributeError):
+            while self.client_info:
+                try:
+                    if not self.client_socket.recv(config.settings.network.buffer_size):
                         break
-                else:
+                except TimeoutError:
+                    continue
+                except OSError:
                     break
-        except Exception:
-            pass
-        finally:
-            if hasattr(self, "client_info") and self.client_info:
-                forwarder.remove_client(self.client_info)
+        except Exception as e:
+            log_debug(f"Download keep-alive for {self.client_address} ended: {e}", "ntrip")
+
+    def _end_download(self, streaming: bool) -> None:
+        """Tear a download down on every exit path: forwarder client, active-client count, user slot.
+
+        ``streaming`` says whether the download got as far as being counted as an active client.
+        """
+        client_info, self.client_info = self.client_info, None
+        if client_info:
+            forwarder.remove_client(client_info)
+            if streaming:
                 metrics.ACTIVE_CONNECTIONS.labels(type="client").dec()
-                logger.log_client_disconnect(self.username, self.mount, self.client_address[0])
+        self._release_user_slot()
 
     def _send_mount_list(self) -> None:
         """Send mount point list"""
@@ -1148,14 +1165,16 @@ class NTRIPHandler:
         except Exception as e:
             log_error(f"Failed to send response: {e}", exc_info=True)
 
+    def _release_user_slot(self) -> None:
+        """Release this download's per-user slot, if it holds one. Safe to call more than once."""
+        if self.connection_id:
+            connection.remove_user_connection(self.username, connection_id=self.connection_id)
+            self.connection_id = None
+
     def _cleanup(self) -> None:
         """Clean up resources"""
         try:
-            if hasattr(self, "username") and hasattr(self, "mount"):
-                if hasattr(self, "client_info"):
-                    connection.remove_user_connection(self.username, self.client_address[0], self.mount)
-                elif hasattr(self, "mount_connection_established") and self.mount_connection_established:
-                    connection.remove_mount_connection(self.mount)
+            self._release_user_slot()
             self.client_socket.close()
         except Exception as e:
             log_error(f"Error cleaning up resources: {e}", exc_info=True)
