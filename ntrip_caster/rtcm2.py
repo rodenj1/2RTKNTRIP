@@ -16,6 +16,9 @@ from pyrtcm import RTCMMessage, RTCMReader, parse_msm
 from . import forwarder
 from .logger import log_debug, log_error, log_info, log_warning
 
+# At most one log line per mount per this many seconds about invalid RTCM frames.
+INVALID_FRAME_LOG_INTERVAL_S = 60.0
+
 # Country code mapping table (2-char -> 3-char) - ISO 3166-1
 COUNTRY_CODE_MAP = {
     # Asia
@@ -349,6 +352,10 @@ class RTCMParserThread(threading.Thread):
         self.pipe_r, self.pipe_w = socket.socketpair()
         self.pipe_r.settimeout(5.0)
 
+        # Invalid frames (e.g. failed CRC) are counted and summarised, not logged one by one.
+        self.invalid_frames = 0
+        self.last_invalid_log: float | None = None
+
         self.stats_start_time = time.time()
         self.total_bytes = 0
         self.last_stats_time = time.time()
@@ -363,7 +370,7 @@ class RTCMParserThread(threading.Thread):
         try:
             forwarder.register_subscriber(self.mount_name, self.pipe_w)
             stream = self.pipe_r.makefile("rb")
-            reader = RTCMReader(stream)
+            reader = RTCMReader(stream, errorhandler=self._on_invalid_frame)
             self.start_time = time.time()
 
             while self.running.is_set():
@@ -421,6 +428,22 @@ class RTCMParserThread(threading.Thread):
             self.pipe_r.close()
             self.pipe_w.close()
             log_info(f"Parsing thread stopped [Mount: {self.mount_name}]")
+
+    def _on_invalid_frame(self, err: Exception) -> None:
+        """Count an invalid RTCM frame; log the first at once, then a summary at most once an interval.
+
+        Without this, pyrtcm logs every invalid frame at ERROR, which floods the log when
+        a base sends a corrupt stream. Invalid frames are still relayed to rovers as-is.
+        """
+        self.invalid_frames += 1
+        now = time.time()
+        if self.last_invalid_log is not None and now - self.last_invalid_log < INVALID_FRAME_LOG_INTERVAL_S:
+            return
+        log_warning(
+            f"Invalid RTCM frames from mount {self.mount_name}: {self.invalid_frames} since last report (latest: {err})"
+        )
+        self.invalid_frames = 0
+        self.last_invalid_log = now
 
     def _get_msg_id(self, msg: RTCMMessage) -> int | None:
         """Get message ID safely"""
