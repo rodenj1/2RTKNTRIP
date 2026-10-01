@@ -674,6 +674,13 @@ class RTCMParserThread(threading.Thread):
     def stop(self) -> None:
         """Stop parsing thread"""
         self.running.clear()
+        # Wake a read that is waiting for data: shutting the pipe's write side gives the
+        # reader end-of-stream at once, so the thread exits now rather than after its
+        # read timeout. The forwarder drops this subscriber on its next write.
+        try:
+            self.pipe_w.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
         self.join(timeout=5)
         log_info(f"Parsing thread closed for mount {self.mount_name}")
 

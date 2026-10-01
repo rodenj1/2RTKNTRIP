@@ -169,9 +169,6 @@ class ConnectionManager:
             # Generate initial STR table
             self._generate_initial_str(mount_name)
 
-            # Start STR correction parsing process
-            self.start_str_correction(mount_name)
-
             log_info(
                 f"Mount point {mount_name} is online, IP: {ip_address}, Current online mounts: {len(self.online_mounts)}"
             )
@@ -181,7 +178,12 @@ class ConnectionManager:
 
             self.print_active_connections()
 
-            return True, "Mount point connected successfully"
+        # Start STR correction after releasing the mount lock: it may first stop the
+        # previous session's parser, which must never hold up other clients. It is
+        # tied to this session's record, captured above under the lock.
+        self.start_str_correction(mount_name, session=mount_info)
+
+        return True, "Mount point connected successfully"
 
     def check_mount_live(self, mount_name: str, max_idle_s: float) -> bool:
         """Report whether a mount is online with a source still sending data, evicting it if not.
@@ -578,10 +580,20 @@ class ConnectionManager:
                 "users": user_stats,
             }
 
-    def start_str_correction(self, mount_name: str) -> None:
-        """Start RTCM parsing to correct STR table"""
-        if mount_name not in self.online_mounts:
+    def start_str_correction(self, mount_name: str, session: MountInfo | None = None) -> None:
+        """Start RTCM parsing to correct STR table.
+
+        ``session`` is the mount record the correction belongs to (default: the current
+        one). If a newer session already holds the mount, nothing is started.
+        """
+        current = self.online_mounts.get(mount_name)
+        if current is None:
             log_warning(f"Cannot start STR correction, mount point {mount_name} is not online")
+            return
+        if session is None:
+            session = current
+        elif current is not session:
+            log_debug(f"Mount point {mount_name} was taken over before its STR correction started; skipping it")
             return
 
         parser = rtcm_manager.start_parser(
@@ -598,7 +610,6 @@ class ConnectionManager:
         # This correction belongs to this session (its mount record) and the parser it
         # started. If the source reconnects meanwhile, the new session has its own record
         # and parser, which this correction must neither read, write nor stop.
-        session = self.online_mounts.get(mount_name)
 
         def wait_and_correct() -> None:
             log_debug(f"Waiting for STR correction complete for mount {mount_name}")
