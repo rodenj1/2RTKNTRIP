@@ -32,7 +32,7 @@ FROM python:3.12-slim AS production
 
 # Set metadata
 LABEL maintainer="2rtk <i@jia.by>" \
-      version="2.2.0" \
+      version="2.3.0" \
       description="High-performance NTRIP Caster with RTCM parsing"
 
 # Set environment variables
