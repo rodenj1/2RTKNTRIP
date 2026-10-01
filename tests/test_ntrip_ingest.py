@@ -55,7 +55,7 @@ def _drive_ingest(mocker: MockerFixture, raw_request: bytes, recv_buffers: list[
     mocker.patch("ntrip_caster.ntrip.forwarder.upload_data", side_effect=_capture)
     mocker.patch("ntrip_caster.ntrip.forwarder.remove_mount_buffer")
     manager = mocker.patch("ntrip_caster.ntrip.connection.get_connection_manager").return_value
-    manager.is_mount_online.return_value = False
+    manager.check_mount_live.return_value = False  # no current holder: the upload is accepted
     manager.add_mount_connection.return_value = (True, "ok")
     mocker.patch("ntrip_caster.ntrip.threading.Timer")
     mocker.patch.object(NTRIPHandler, "verify_user", return_value=(True, "ok"))

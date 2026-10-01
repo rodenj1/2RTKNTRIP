@@ -119,8 +119,8 @@ def test_cleanup_still_removes_the_buffer_when_the_mount_was_already_dropped(
     manager: ConnectionManager, cleanup_timers: list[Callable[[], None]], forwarder: MagicMock
 ) -> None:
     _upload_session([RTCM_1005, b""])
-    # Something else (zombie cleanup, an admin delete) drops the mount before the timer fires.
-    manager.remove_mount_connection("MP1", "Zombie connection cleanup")
+    # Something else (an eviction as quiet, an admin delete) drops the mount before the timer fires.
+    manager.remove_mount_connection("MP1", "Evicted as quiet")
 
     cleanup_timers[0]()
 

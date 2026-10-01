@@ -723,9 +723,6 @@ class NTRIPHandler:
                 )
             log_debug(f"Starting handle_upload for {self.client_address}: path={path}")
 
-            connection.get_connection_manager().cleanup_zombie_connections()
-            connection.get_connection_manager().force_refresh_connections()
-
             mount = path.lstrip("/")
             if not mount:
                 self._reject_upload_mount(400, "Missing mount point")
@@ -734,7 +731,10 @@ class NTRIPHandler:
             transfer_codings = headers.get("transfer-encoding", "").lower().split(",")
             self.upload_chunked = "chunked" in (coding.strip() for coding in transfer_codings)
 
-            if connection.get_connection_manager().is_mount_online(mount):
+            # A holder that has gone quiet is evicted first, so a base whose old
+            # connection silently died can reconnect, even from a new address.
+            replaces_same_ip_session = False
+            if connection.get_connection_manager().check_mount_live(mount, config.settings.ntrip.mount_data_timeout):
                 existing_mount = connection.get_connection_manager().get_mount_info(mount)
                 if existing_mount and existing_mount["ip_address"] != self.client_address[0]:
                     message_key = f"mount_occupied_{mount}_{existing_mount['ip_address']}"
@@ -754,12 +754,9 @@ class NTRIPHandler:
                         pass
                     return
                 elif existing_mount and existing_mount["ip_address"] == self.client_address[0]:
-                    logger.log_warning(
-                        f"Detected duplicate connection from same IP ({self.client_address[0]}), allowing reconnection"
-                    )
-                    connection.get_connection_manager().remove_mount_connection(
-                        mount, "Duplicate connection from same IP"
-                    )
+                    # Probably the same base reconnecting; replace its old session,
+                    # but only once this one has authenticated (below).
+                    replaces_same_ip_session = True
 
             auth_header = headers.get("authorization", "")
             log_info(f"Verifying handle_upload for {self.client_address}: mount={mount}")
@@ -782,6 +779,12 @@ class NTRIPHandler:
                 except Exception:
                     pass
                 return
+
+            if replaces_same_ip_session:
+                logger.log_warning(
+                    f"Detected duplicate connection from same IP ({self.client_address[0]}), allowing reconnection"
+                )
+                connection.get_connection_manager().remove_mount_connection(mount, "Duplicate connection from same IP")
 
             try:
                 success, message = connection.get_connection_manager().add_mount_connection(
