@@ -8,13 +8,16 @@ Covers issue #3: chunked NTRIP v2 uploads must be de-chunked before forwarding,
 while v1.0 uploads stay byte-for-byte raw passthrough. And issue #29: a body is
 chunked only if its request says ``Transfer-Encoding: chunked`` (matched
 case-insensitively); any other upload, whatever its version, is forwarded raw.
+And issue #37: body bytes that arrive in the same read as the request headers are
+kept, headers split across reads are read in full, an oversized header block is
+rejected, and legacy requests (LF-only, no blank line) are still served.
 """
 
 from unittest.mock import MagicMock
 
 from pytest_mock import MockerFixture
 
-from ntrip_caster.ntrip import NTRIPHandler
+from ntrip_caster.ntrip import MAX_REQUEST_HEAD_BYTES, NTRIPHandler
 
 
 def _framed(payload: bytes) -> bytes:
@@ -40,12 +43,15 @@ UPLOAD_REQUESTS = {
 }
 
 
-def _drive_ingest(mocker: MockerFixture, raw_request: bytes, recv_buffers: list[bytes]) -> bytes:
-    """Run one upload through handle_request(); return the bytes forwarded to the mount.
+def _run_upload(
+    mocker: MockerFixture, raw_request: bytes, recv_items: list[bytes | BaseException]
+) -> tuple[bytes, bytes]:
+    """Run one upload through handle_request(); return (bytes forwarded to the mount, bytes sent back).
 
-    The socket returns ``raw_request``, then each body buffer in turn, then b"" to
-    end the upload. Auth, the connection manager and the cleanup timer are stubbed so
-    the test observes only what reaches forwarder.upload_data().
+    The socket returns ``raw_request``, then each item in turn (an exception is
+    raised instead, e.g. a read timeout), then b"" to end the upload. Auth, the
+    connection manager and the cleanup timer are stubbed so the test observes
+    only what reaches forwarder.upload_data() and what the client is told.
     """
     forwarded = bytearray()
 
@@ -61,11 +67,18 @@ def _drive_ingest(mocker: MockerFixture, raw_request: bytes, recv_buffers: list[
     mocker.patch.object(NTRIPHandler, "verify_user", return_value=(True, "ok"))
 
     sock = MagicMock()
-    sock.recv.side_effect = [raw_request, *recv_buffers, b""]
+    sock.recv.side_effect = [raw_request, *recv_items, b""]
 
     NTRIPHandler(sock, ("127.0.0.1", 12345), MagicMock()).handle_request()
 
-    return bytes(forwarded)
+    sent = b"".join(c.args[0] for c in sock.send.call_args_list)
+    return bytes(forwarded), sent
+
+
+def _drive_ingest(mocker: MockerFixture, raw_request: bytes, recv_buffers: list[bytes]) -> bytes:
+    """Run one upload; return the bytes forwarded to the mount."""
+    forwarded, _sent = _run_upload(mocker, raw_request, list(recv_buffers))
+    return forwarded
 
 
 # A representative RTCM3 1005 frame: 0xD3 preamble, 10-bit length field, payload, 3-byte CRC.
@@ -133,3 +146,61 @@ def test_v2_upload_without_chunked_encoding_is_forwarded_raw(mocker: MockerFixtu
 def test_chunked_transfer_encoding_is_matched_case_insensitively(mocker: MockerFixture) -> None:
     forwarded = _drive_ingest(mocker, _v2_post("Chunked"), [_framed(RTCM_1005)])
     assert forwarded == RTCM_1005
+
+
+def test_v1_body_bytes_in_the_same_read_as_the_headers_are_kept(mocker: MockerFixture) -> None:
+    # The first body bytes even contain a colon, which must not be parsed as a header.
+    first_body = RTCM_1005 + b"X: y"
+    forwarded = _drive_ingest(mocker, UPLOAD_REQUESTS["1.0"] + first_body, [RTCM_1005])
+    assert forwarded == first_body + RTCM_1005
+
+
+def test_chunked_v2_first_chunk_in_the_same_read_as_the_headers_is_dechunked(mocker: MockerFixture) -> None:
+    forwarded = _drive_ingest(mocker, _v2_post() + _framed(RTCM_1005), [_framed(RTCM_1005)])
+    assert forwarded == RTCM_1005 + RTCM_1005
+
+
+def test_headers_split_across_reads_are_read_in_full(mocker: MockerFixture) -> None:
+    # The Transfer-Encoding header arrives in the second read, with the first chunk.
+    request = _v2_post()
+    split_at = request.index(b"Transfer-Encoding")
+    forwarded = _drive_ingest(mocker, request[:split_at], [request[split_at:] + _framed(RTCM_1005)])
+    assert forwarded == RTCM_1005
+
+
+def test_an_oversized_request_head_is_rejected(mocker: MockerFixture) -> None:
+    upload = mocker.patch("ntrip_caster.ntrip.forwarder.upload_data")
+    sock = MagicMock()
+    endless_header = b"SOURCE secret /TESTMOUNT\r\n" + b"X-Padding: " + b"a" * (2 * MAX_REQUEST_HEAD_BYTES)
+    half = len(endless_header) // 2
+    sock.recv.side_effect = [endless_header[:half], endless_header[half:], b""]
+
+    NTRIPHandler(sock, ("127.0.0.1", 12345), MagicMock()).handle_request()
+
+    sent = b"".join(c.args[0] for c in sock.send.call_args_list)
+    assert sent.startswith(b"HTTP/1.0 400 Bad Request")
+    upload.assert_not_called()
+
+
+def test_a_legacy_request_without_the_blank_line_is_served_after_a_read_timeout(mocker: MockerFixture) -> None:
+    # Some old clients never send the blank line that ends the headers. Once a read
+    # times out, the caster serves the request with what arrived.
+    request = b"SOURCE secret /TESTMOUNT\r\nSource-Agent: NTRIP Old/1.0\r\n"
+    _forwarded, sent = _run_upload(mocker, request, [TimeoutError()])
+    assert sent.startswith(b"ICY 200 OK")
+
+
+def test_lf_only_request_is_served_with_its_body(mocker: MockerFixture) -> None:
+    request = b"SOURCE secret /TESTMOUNT\nSource-Agent: NTRIP Old/1.0\n\n"
+    forwarded, sent = _run_upload(mocker, request + RTCM_1005, [RTCM_1005])
+    assert sent.startswith(b"ICY 200 OK")
+    assert forwarded == RTCM_1005 + RTCM_1005
+
+
+def test_rtcm_straight_after_the_request_line_starts_the_body(mocker: MockerFixture) -> None:
+    # An old v1 server that streams RTCM right after its request, with no blank line:
+    # the first binary byte at the start of a line ends the headers and starts the body.
+    request = b"SOURCE secret /TESTMOUNT\r\nSource-Agent: NTRIP Old/1.0\r\n"
+    forwarded, sent = _run_upload(mocker, request + RTCM_1005, [RTCM_1005])
+    assert sent.startswith(b"ICY 200 OK")
+    assert forwarded == RTCM_1005 + RTCM_1005

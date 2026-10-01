@@ -27,6 +27,37 @@ NTRIP_V2_VERSION_HEADER = "Ntrip-Version: Ntrip/2.0"
 NTRIP_V2_STREAM_CONTENT_TYPE = "gnss/data"
 NTRIP_V2_SOURCETABLE_CONTENT_TYPE = "gnss/sourcetable"
 
+# The most a request's line and headers may take before they end.
+MAX_REQUEST_HEAD_BYTES = 16 * 1024
+# How long to wait for more of a request's headers once some have arrived. A legacy
+# client that never ends its headers is served with what it sent after this long.
+REQUEST_HEAD_READ_TIMEOUT_S = 2.0
+
+
+def split_request_head(data: bytes) -> tuple[bytes, bytes] | None:
+    """Split raw request bytes into (head, body) where the request's headers end, or None if they haven't yet.
+
+    The headers end at the first blank line (CRLF or bare LF line endings), or, for
+    legacy uploaders that stream straight after their request, at the first line that
+    starts with a non-text byte (such as RTCM's 0xD3 preamble), which starts the body.
+    """
+    ends: list[tuple[int, int]] = []
+    for blank_line in (b"\r\n\r\n", b"\n\n"):
+        at = data.find(blank_line)
+        if at != -1:
+            ends.append((at, at + len(blank_line)))
+    at = data.find(b"\n")
+    while at != -1 and at + 1 < len(data):
+        first = data[at + 1]
+        if first >= 0x80 or (first < 0x20 and first not in (0x09, 0x0A, 0x0D)):
+            ends.append((at + 1, at + 1))
+            break
+        at = data.find(b"\n", at + 1)
+    if not ends:
+        return None
+    head_end, body_start = min(ends)
+    return data[:head_end], data[body_start:]
+
 # The RTSP methods the caster implements; any other RTSP method gets 501 Not Implemented.
 RTSP_METHODS = ("DESCRIBE", "SETUP", "PLAY", "PAUSE", "TEARDOWN", "RECORD")
 
@@ -89,6 +120,9 @@ class NTRIPHandler:
         self.current_method: str = "GET"
         self.mount_connection_established: bool = False
         self.client_info: dict[str, Any] | None = None
+        # Bytes that arrived after the request headers, in the same read: the start of
+        # an upload's body, handed to ingest before it reads any more.
+        self.pending_body: bytes = b""
         # The CSeq of the RTSP request being answered; every RTSP reply echoes it.
         self.rtsp_cseq: str = "1"
         # Whether this upload's body is HTTP-chunked (it said Transfer-Encoding: chunked).
@@ -142,17 +176,23 @@ class NTRIPHandler:
         """Handle NTRIP request with enhanced validation and error handling"""
         try:
             log_debug(f"=== Starting request handling {self.client_address} ===")
-            raw = self.initial_bytes + self.client_socket.recv(config.settings.network.buffer_size)
-            request_data = raw.decode("utf-8", errors="ignore")
-            if not request_data:
+            raw = self._read_request_head()
+            split = split_request_head(raw)
+            head, self.pending_body = split if split is not None else (raw, b"")
+            if len(head) > MAX_REQUEST_HEAD_BYTES:
+                log_debug(f"Client {self.client_address} sent an oversized request head")
+                self.send_error_response(400, "Bad Request: Request header too large")
+                return
+            if not raw:
                 log_debug(f"Client {self.client_address} sent empty request")
                 return
+            request_data = head.decode("utf-8", errors="ignore")
 
             raw_request = request_data[:200]
             sanitized_request = self._sanitize_request_for_logging(raw_request)
             log_debug(f"Detected connection request from {self.client_address}: {sanitized_request}")
 
-            lines = request_data.strip().split("\r\n")
+            lines = request_data.strip().splitlines()
             if not lines or not lines[0].strip():
                 self.send_error_response(400, "Bad Request: Empty request line")
                 return
@@ -299,6 +339,32 @@ class NTRIPHandler:
                 key, value = line.split(":", 1)
                 headers[key.strip().lower()] = value.strip()
         return headers
+
+    def _read_request_head(self) -> bytes:
+        """Read until the request's headers end (see split_request_head), across reads if needed.
+
+        Returns everything read, which may run past the headers into the body. Stops
+        early if the client closes, more than MAX_REQUEST_HEAD_BYTES arrive without the
+        headers ending, or, once some of the request has arrived, no more comes within
+        REQUEST_HEAD_READ_TIMEOUT_S (a legacy client that never ends its headers is then
+        served with what it sent).
+        """
+        data = self.initial_bytes
+        socket_timeout = self.client_socket.gettimeout()
+        try:
+            while split_request_head(data) is None and len(data) <= MAX_REQUEST_HEAD_BYTES:
+                if data:
+                    self.client_socket.settimeout(REQUEST_HEAD_READ_TIMEOUT_S)
+                try:
+                    chunk = self.client_socket.recv(config.settings.network.buffer_size)
+                except TimeoutError:
+                    break
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            self.client_socket.settimeout(socket_timeout)
+        return data
 
     def _determine_ntrip_version(self, headers: dict[str, str], request_line: str) -> None:
         """Determine the NTRIP version and protocol type from the method and headers.
@@ -890,13 +956,18 @@ class NTRIPHandler:
         stream. Any other upload, whatever its version, is raw and forwarded verbatim.
         """
         decoder = ChunkedDecoder() if self.upload_chunked else None
+        # Body bytes that arrived with the request headers come first.
+        pending, self.pending_body = self.pending_body, b""
         try:
             while True:
                 try:
-                    data = self.client_socket.recv(config.settings.network.buffer_size)
-                    if not data:
-                        log_debug(f"Mount point {mount} connection closed", "ntrip")
-                        break
+                    if pending:
+                        data, pending = pending, b""
+                    else:
+                        data = self.client_socket.recv(config.settings.network.buffer_size)
+                        if not data:
+                            log_debug(f"Mount point {mount} connection closed", "ntrip")
+                            break
                     if decoder is not None:
                         data = decoder.feed(data)
                         if not data:
