@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-import re
-import subprocess
 import threading
 import time
 import uuid
@@ -21,7 +19,7 @@ class MountRelease(Enum):
     """What happened when a session released its mount."""
 
     RELEASED = "released"  # this session still held the mount; it is now offline
-    NOT_ONLINE = "not_online"  # the mount was already gone (zombie cleanup, admin delete, ...)
+    NOT_ONLINE = "not_online"  # the mount was already gone (evicted as quiet, admin delete, ...)
     HELD_BY_ANOTHER_SESSION = "held_by_another_session"  # the source reconnected; the new session keeps it
 
 
@@ -132,56 +130,6 @@ class ConnectionManager:
         """Print current active NTRIP connection information"""
         with self.mount_lock:
             pass
-
-    def force_refresh_connections(self) -> None:
-        """Force refresh connection status and print details"""
-        invalid_mounts = []
-        for mount_name, mount_info in self.online_mounts.items():
-            idle_time = mount_info.idle_time
-            if idle_time > 60:  # No data for more than 60 seconds
-                invalid_mounts.append(mount_name)
-        self.print_active_connections()
-
-    def cleanup_zombie_connections(self) -> None:
-        """Clean up zombie connections - Check system level socket status"""
-        try:
-            # Get system level socket connection status
-            result = subprocess.run(["netstat", "-an"], capture_output=True, text=True, shell=True, check=False)
-            if result.returncode != 0:
-                log_warning("Unable to get system socket status")
-                return
-
-            # Parse ESTABLISHED connections
-            established_ips = set()
-            ntrip_port_str = f":{config.settings.ntrip.port}"
-            for line in result.stdout.split("\n"):
-                if ntrip_port_str in line and "ESTABLISHED" in line:
-                    # Extract remote IP address
-                    match = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)\s+ESTABLISHED", line)
-                    if match:
-                        remote_ip = match.group(1)
-                        established_ips.add(remote_ip)
-
-            # Check application layer connection status
-            with self.mount_lock:
-                zombie_mounts = []
-                for mount_name, mount_info in self.online_mounts.items():
-                    if mount_info.ip_address not in established_ips:
-                        zombie_mounts.append(mount_name)
-                        log_warning(f"Zombie connection detected: Mount {mount_name}, IP {mount_info.ip_address}")
-
-                # Cleanup zombie connections
-                for mount_name in zombie_mounts:
-                    log_info(f"Cleaning up zombie connection: {mount_name}")
-                    self.remove_mount_connection(mount_name, "Zombie connection cleanup")
-
-                if zombie_mounts:
-                    log_info(f"Cleaned up {len(zombie_mounts)} zombie connections")
-                else:
-                    log_debug("No zombie connections found")
-
-        except Exception as e:
-            log_error(f"Exception occurred while cleaning up zombie connections: {e}", exc_info=True)
 
     def add_mount_connection(
         self,
