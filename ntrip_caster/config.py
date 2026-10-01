@@ -23,7 +23,7 @@ class AppConfig(BaseModel):
     """Basic application information"""
 
     name: str = "2RTK Ntrip Caster"
-    version: str = "2.2.0"
+    version: str = "2.3.0"
     description: str = "Ntrip Caster"
     author: str = "2rtk"
     contact: str = "i@jia.by"

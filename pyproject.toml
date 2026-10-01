@@ -1,6 +1,6 @@
 [project]
 name = "ntrip-caster"
-version = "2.2.0"
+version = "2.3.0"
 description = "High-performance NTRIP Caster with RTCM parsing"
 requires-python = ">=3.12"
 dependencies = [
