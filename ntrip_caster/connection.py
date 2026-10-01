@@ -235,6 +235,25 @@ class ConnectionManager:
 
             return True, "Mount point connected successfully"
 
+    def check_mount_live(self, mount_name: str, max_idle_s: float) -> bool:
+        """Report whether a mount is online with a source still sending data, evicting it if not.
+
+        A mount that is online but has sent no data for more than ``max_idle_s``
+        (since its last data, or since it connected if it never sent any) has a
+        source that has silently gone away. It is removed, closing its socket, and
+        False is returned.
+        """
+        with self.mount_lock:
+            mount_info = self.online_mounts.get(mount_name)
+            if mount_info is None:
+                return False
+            idle_s = mount_info.idle_time
+            if idle_s <= max_idle_s:
+                return True
+            log_warning(f"Mount point {mount_name} sent no data for {idle_s:.0f}s; removing it as stale")
+            self.remove_mount_connection(mount_name, f"No data for {idle_s:.0f}s")
+            return False
+
     def release_mount(self, mount_name: str, client_socket: Any) -> MountRelease:
         """Release a mount on behalf of the session that owns ``client_socket``.
 

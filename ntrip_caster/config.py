@@ -72,6 +72,9 @@ class NtripConfig(BaseModel):
     mount_timeout: int = 1800  # 30 minutes
     client_timeout: int = 300  # 5 minutes
     connection_timeout: int = 1800  # Connection timeout (seconds)
+    # A mount whose source has sent no data for this long is treated as gone: downloads
+    # get the unavailable reply and the stale mount is removed (seconds).
+    mount_data_timeout: float = Field(default=30.0, gt=0)
 
 
 # ==================== Web Interface Configuration ====================
