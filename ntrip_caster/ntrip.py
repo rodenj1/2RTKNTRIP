@@ -901,9 +901,9 @@ class NTRIPHandler:
                         data = decoder.feed(data)
                         if not data:
                             continue
+                    # upload_data also updates the mount's statistics (bytes, count, last-data time).
                     forwarder.upload_data(mount, data)
                     metrics.DATA_THROUGHPUT.labels(mount=mount, direction="in").inc(len(data))
-                    connection.get_connection_manager().update_mount_data_stats(mount, len(data))
                 except OSError:
                     log_debug(f"Mount point {mount} socket closed, stopping data reception", "ntrip")
                     break
