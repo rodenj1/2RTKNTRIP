@@ -718,7 +718,7 @@ class NTRIPHandler:
 
             mount = path.lstrip("/")
             if not mount:
-                self.send_error_response(400, "Missing mount point")
+                self._reject_upload_mount(400, "Missing mount point")
                 return
             self.mount = mount
 
@@ -733,7 +733,7 @@ class NTRIPHandler:
                             f"rejecting connection from {self.client_address[0]}"
                             + (f" (Suppressed {suppressed} similar messages)" if suppressed > 0 else "")
                         )
-                    self.send_error_response(
+                    self._reject_upload_mount(
                         409, f"Mount point {mount} is already online from {existing_mount['ip_address']}"
                     )
                     try:
@@ -761,7 +761,10 @@ class NTRIPHandler:
                     "ntrip",
                 )
                 metrics.AUTH_ATTEMPTS.labels(status="failed", type="mount").inc()
-                self.send_auth_challenge(message)
+                if self.ntrip_version == "2.0":
+                    self.send_auth_challenge(message)
+                else:
+                    self._send_v1_server_error("Bad Password")
                 try:
                     self.client_socket.close()
                 except Exception:
@@ -778,7 +781,7 @@ class NTRIPHandler:
                 )
                 if not success:
                     log_warning(f"Mount point {mount} connection rejected: {message}")
-                    self.send_error_response(409, message)
+                    self._reject_upload_mount(409, message)
                     try:
                         self.client_socket.close()
                     except Exception:
@@ -808,6 +811,18 @@ class NTRIPHandler:
                 return
             mount = path.lstrip("/")
             self.mount = mount
+            # A mount that is unknown, or has no source online, can't be served; say
+            # so before authenticating, so the client isn't told its credentials are
+            # wrong or left waiting on a silent stream. Both cases get one reply.
+            mount_available = connection.get_connection_manager().is_mount_online(
+                mount
+            ) and self.db_manager.check_mount_exists_in_db(mount)
+            if not mount_available:
+                if self.ntrip_version == "2.0":
+                    self.send_error_response(404, "Mount point not available")
+                else:
+                    self._send_mount_list()
+                return
             auth_header = next((v for k, v in headers.items() if k.lower() == "authorization"), "")
             is_valid, message = self.verify_user(mount, auth_header, "download")
             if not is_valid:
@@ -818,9 +833,6 @@ class NTRIPHandler:
                     "ntrip",
                 )
                 self.send_auth_challenge(message)
-                return
-            if not self.db_manager.check_mount_exists_in_db(mount):
-                self.send_error_response(404, "Mount point not found")
                 return
             connection_id = connection.add_user_connection(self.username, mount, self.client_address[0])
             try:
@@ -1028,28 +1040,43 @@ class NTRIPHandler:
             )
         else:
             try:
-                response = "SOURCETABLE 401 Unauthorized\r\n" + "".join([f"{h}\r\n" for h in auth_headers]) + "\r\n"
+                response = "HTTP/1.0 401 Unauthorized\r\n" + "".join([f"{h}\r\n" for h in auth_headers]) + "\r\n"
                 self.client_socket.send(response.encode("utf-8"))
             except Exception as e:
                 log_error(f"Failed to send auth challenge: {e}", exc_info=True)
 
-    def send_error_response(self, code: int, message: str) -> None:
-        """Send HTTP error response"""
+    def _reject_upload_mount(self, code: int, message: str) -> None:
+        """Refuse an upload's mount: an HTTP error for a v2 server, the NTRIP v1 error line otherwise."""
         if self.ntrip_version == "2.0":
-            status_messages = {
-                400: "Bad Request",
-                401: "Unauthorized",
-                404: "Not Found",
-                405: "Method Not Allowed",
-                409: "Conflict",
-                500: "Internal Server Error",
-            }
-            self._send_response(
-                f"HTTP/1.1 {code} {status_messages.get(code, 'Error')}", content_type="text/plain", content=message
-            )
+            self.send_error_response(code, message)
+        else:
+            self._send_v1_server_error("Mount Point Taken or Invalid")
+
+    def _send_v1_server_error(self, reason: str) -> None:
+        """Send an NTRIP v1 server error line (``ERROR - <reason>``), as the BKG caster does."""
+        try:
+            self.client_socket.send(f"ERROR - {reason}\r\n".encode())
+        except Exception as e:
+            log_error(f"Failed to send v1 server error: {e}", exc_info=True)
+
+    def send_error_response(self, code: int, message: str) -> None:
+        """Send an HTTP error response: HTTP/1.1 for v2 clients, HTTP/1.0 for v1."""
+        status_messages = {
+            400: "Bad Request",
+            401: "Unauthorized",
+            404: "Not Found",
+            405: "Method Not Allowed",
+            409: "Conflict",
+            500: "Internal Server Error",
+            501: "Not Implemented",
+        }
+        reason = status_messages.get(code, "Error")
+        if self.ntrip_version == "2.0":
+            self._send_response(f"HTTP/1.1 {code} {reason}", content_type="text/plain", content=message)
         else:
             try:
-                self.client_socket.send(f"ERROR {code} {message}\r\n\r\n".encode())
+                response = f"HTTP/1.0 {code} {reason}\r\nContent-Type: text/plain\r\n\r\n{message}"
+                self.client_socket.send(response.encode("utf-8"))
             except Exception as e:
                 log_error(f"Failed to send error response: {e}", exc_info=True)
 
