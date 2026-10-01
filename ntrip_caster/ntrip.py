@@ -159,7 +159,7 @@ class NTRIPHandler:
                 self.send_error_response(400, "Bad Request: Empty request")
                 return
 
-            self._determine_ntrip_version(headers, request_line, path)
+            self._determine_ntrip_version(headers, request_line)
 
             is_valid, error_msg = self._is_valid_request(method, path, headers)
             if not is_valid:
@@ -176,10 +176,7 @@ class NTRIPHandler:
             if method.upper() in ["SOURCE", "POST"]:
                 self.handle_upload(path, headers)
             elif method.upper() == "GET":
-                if self.protocol_type in ["ntrip1_0_http", "ntrip2_0", "ntrip1_0", "ntrip0_8"]:
-                    self.handle_download(path, headers)
-                else:
-                    self.handle_http_get(path, headers)
+                self.handle_download(path, headers)
             elif method.upper() == "OPTIONS":
                 self.handle_options(headers)
             elif method.upper() in ["DESCRIBE", "SETUP", "PLAY", "PAUSE", "TEARDOWN", "RECORD"]:
@@ -284,8 +281,14 @@ class NTRIPHandler:
                 headers[key.strip().lower()] = value.strip()
         return headers
 
-    def _determine_ntrip_version(self, headers: dict[str, str], request_line: str, path: str) -> None:
-        """Determine NTRIP protocol type"""
+    def _determine_ntrip_version(self, headers: dict[str, str], request_line: str) -> None:
+        """Determine the NTRIP version and protocol type from the method and headers.
+
+        SOURCE is a v1 server (or NTRIP 0.8) and POST a v2 server. A GET is a v2
+        client only when it sends ``Ntrip-Version: Ntrip/2.0`` (any case); every
+        other GET is v1. The HTTP version, User-Agent and other headers are not
+        version signals.
+        """
         if request_line.startswith(("SOURCE ", "ADMIN ")):
             parts = request_line.split()
             if len(parts) >= 2:
@@ -327,70 +330,25 @@ class NTRIPHandler:
         else:
             protocol_type = "unknown"
 
-        if request_line.startswith(("POST ", "GET ")) and "HTTP/" in request_line:
-            user_agent = headers.get("user-agent", "").lower()
-            if any(ntrip_ua in user_agent for ntrip_ua in ["ntrip", "rtk", "gnss", "gps"]):
-                if "2.0" in user_agent or "HTTP/1.1" in request_line:
+        if protocol_type == "http":
+            if request_line.startswith("GET "):
+                if headers.get("ntrip-version", "").strip().lower() == "ntrip/2.0":
                     self.ntrip_version = "2.0"
                     self.protocol_type = "ntrip2_0"
-                    logger.log_debug(f"Detected NTRIP 2.0 HTTP format from {self.client_address}", "ntrip")
                 else:
                     self.ntrip_version = "1.0"
                     self.protocol_type = "ntrip1_0_http"
-                    log_debug(f"Detected NTRIP 1.0 HTTP format from {self.client_address}")
-                return
-
-            if "authorization" in headers:
-                if "HTTP/1.1" in request_line:
-                    self.ntrip_version = "2.0"
-                    self.protocol_type = "ntrip2_0"
-                    log_debug(f"Detected NTRIP 2.0 HTTP auth format from {self.client_address}")
-                else:
-                    self.ntrip_version = "1.0"
-                    self.protocol_type = "ntrip1_0_http"
-                    log_debug(f"Detected NTRIP 1.0 HTTP auth format from {self.client_address}")
-                return
-
-            if protocol_type == "http" and "ntrip" in user_agent and path not in ["/", ""]:
+            elif request_line.startswith("POST "):
                 self.ntrip_version = "2.0"
                 self.protocol_type = "ntrip2_0"
-                log_debug(f"Detected NTRIP 2.0 based on path from {self.client_address}")
-                return
-
-        ntrip_version_header = headers.get("ntrip-version", "")
-        if "NTRIP/2.0" in ntrip_version_header:
-            self.ntrip_version = "2.0"
-            self.protocol_type = "ntrip2_0"
-            log_debug(f"Detected NTRIP 2.0 protocol from {self.client_address}")
-        elif protocol_type == "http":
-            if self._should_downgrade_protocol(headers):
-                self.ntrip_version = "1.0"
-                self.protocol_type = "ntrip1_0"
-                log_debug(f"Protocol downgraded to NTRIP 1.0 for {self.client_address}")
             else:
-                user_agent = headers.get("user-agent", "").lower()
-                if any(keyword in user_agent for keyword in ["ntrip", "rtk", "gnss"]):
-                    self.ntrip_version = "2.0"
-                    self.protocol_type = "ntrip2_0"
-                    log_debug(f"Detected NTRIP 2.0 based on User-Agent from {self.client_address}")
-                else:
-                    self.ntrip_version = "2.0"
-                    self.protocol_type = "http"
-                    log_debug(f"Using HTTP protocol for {self.client_address}")
+                self.ntrip_version = "2.0"
+                self.protocol_type = "http"
+            log_debug(f"Detected {self.protocol_type} (NTRIP {self.ntrip_version}) from {self.client_address}")
         else:
             self.ntrip_version = "1.0"
             self.protocol_type = "ntrip1_0"
             log_debug(f"Defaulting to NTRIP 1.0 for {self.client_address}")
-
-    def _should_downgrade_protocol(self, headers: dict[str, str]) -> bool:
-        """Determine if protocol should be downgraded to NTRIP 1.0"""
-        user_agent = headers.get("user-agent", "").lower()
-        old_clients = ["ntrip", "rtk", "gnss", "leica", "trimble"]
-        for client in old_clients:
-            if client in user_agent and "2.0" not in user_agent:
-                return True
-        required_headers = ["connection", "host"]
-        return any(h not in headers for h in required_headers)
 
     def _is_valid_request(self, method: str, path: str, headers: dict[str, str]) -> tuple[bool, str]:
         """Validate request validity"""
@@ -884,18 +842,6 @@ class NTRIPHandler:
             self._keep_connection_alive()
         except Exception as e:
             logger.log_error(f"Exception handling download request: {e}", exc_info=True)
-            self.send_error_response(500, "Internal Server Error")
-
-    def handle_http_get(self, path: str, headers: dict[str, str]) -> None:
-        """Handle standard HTTP GET request"""
-        try:
-            if path == "/" or path == "":
-                content = f"<!DOCTYPE html><html><head><title>{config.settings.app.name}</title></head><body><h1>{config.settings.app.name} Server</h1><p>This is an NTRIP Caster server.</p></body></html>"
-                self._send_response("HTTP/1.1 200 OK", content_type="text/html", content=content)
-            else:
-                self.send_error_response(404, "Not Found")
-        except Exception as e:
-            logger.log_error(f"Exception handling HTTP GET request: {e}", exc_info=True)
             self.send_error_response(500, "Internal Server Error")
 
     def _receive_rtcm_data(self, mount: str) -> None:

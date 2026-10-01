@@ -52,19 +52,20 @@ def test_determine_ntrip_version(mock_socket: MagicMock, mock_db_manager: Databa
     handler = NTRIPHandler(mock_socket, ("127.0.0.1", 12345), mock_db_manager)
 
     # NTRIP 1.0
-    handler._determine_ntrip_version({}, "SOURCE pass /MOUNT", "/MOUNT")
+    handler._determine_ntrip_version({}, "SOURCE pass /MOUNT")
     assert handler.ntrip_version == "1.0"
     assert handler.protocol_type == "ntrip1_0"
 
-    # NTRIP 2.0 (via header) - Using uppercase to match code
-    handler._determine_ntrip_version({"ntrip-version": "NTRIP/2.0"}, "GET /MOUNT HTTP/1.1", "/MOUNT")
-    assert handler.ntrip_version == "2.0"
-    assert handler.protocol_type == "ntrip2_0"
+    # NTRIP 2.0 (via header), matched case-insensitively
+    for value in ("Ntrip/2.0", "NTRIP/2.0", "ntrip/2.0"):
+        handler._determine_ntrip_version({"ntrip-version": value}, "GET /MOUNT HTTP/1.1")
+        assert handler.ntrip_version == "2.0"
+        assert handler.protocol_type == "ntrip2_0"
 
-    # NTRIP 2.0 (via User-Agent)
-    handler._determine_ntrip_version({"user-agent": "NTRIP 2.0 Client"}, "GET /MOUNT HTTP/1.1", "/MOUNT")
-    assert handler.ntrip_version == "2.0"
-    assert handler.protocol_type == "ntrip2_0"
+    # The User-Agent is not a version signal: without Ntrip-Version a GET is v1
+    handler._determine_ntrip_version({"user-agent": "NTRIP 2.0 Client"}, "GET /MOUNT HTTP/1.1")
+    assert handler.ntrip_version == "1.0"
+    assert handler.protocol_type == "ntrip1_0_http"
 
 
 def test_is_valid_request(mock_socket: MagicMock, mock_db_manager: DatabaseManager) -> None:
