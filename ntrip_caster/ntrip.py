@@ -27,6 +27,9 @@ NTRIP_V2_VERSION_HEADER = "Ntrip-Version: Ntrip/2.0"
 NTRIP_V2_STREAM_CONTENT_TYPE = "gnss/data"
 NTRIP_V2_SOURCETABLE_CONTENT_TYPE = "gnss/sourcetable"
 
+# The RTSP methods the caster implements; any other RTSP method gets 501 Not Implemented.
+RTSP_METHODS = ("DESCRIBE", "SETUP", "PLAY", "PAUSE", "TEARDOWN", "RECORD")
+
 
 class AntiSpamLogger:
     def __init__(self, time_window: int = 60, max_count: int = 5) -> None:
@@ -86,6 +89,8 @@ class NTRIPHandler:
         self.current_method: str = "GET"
         self.mount_connection_established: bool = False
         self.client_info: dict[str, Any] | None = None
+        # The CSeq of the RTSP request being answered; every RTSP reply echoes it.
+        self.rtsp_cseq: str = "1"
         # Whether this upload's body is HTTP-chunked (it said Transfer-Encoding: chunked).
         self.upload_chunked: bool = False
         # This download's per-user slot, once taken. Releasing it again is a no-op.
@@ -169,6 +174,11 @@ class NTRIPHandler:
                 return
 
             self._determine_ntrip_version(headers, request_line)
+            if self.protocol_type == "rtsp":
+                self.rtsp_cseq = headers.get("cseq", "1")
+                if method.upper() not in RTSP_METHODS:
+                    self.send_error_response(501, f"RTSP method not implemented: {method}")
+                    return
 
             is_valid, error_msg = self._is_valid_request(method, path, headers)
             if not is_valid:
@@ -188,7 +198,7 @@ class NTRIPHandler:
                 self.handle_download(path, headers)
             elif method.upper() == "OPTIONS":
                 self.handle_options(headers)
-            elif method.upper() in ["DESCRIBE", "SETUP", "PLAY", "PAUSE", "TEARDOWN", "RECORD"]:
+            elif method.upper() in RTSP_METHODS:
                 self.handle_rtsp_command(method, path, headers)
             else:
                 self.send_error_response(405, f"Method Not Allowed: {method}")
@@ -377,7 +387,7 @@ class NTRIPHandler:
 
         supported_methods = ["GET", "POST", "SOURCE", "ADMIN", "OPTIONS"]
         if hasattr(self, "protocol_type") and self.protocol_type == "rtsp":
-            supported_methods.extend(["DESCRIBE", "SETUP", "PLAY", "PAUSE", "TEARDOWN", "RECORD"])
+            supported_methods.extend(RTSP_METHODS)
 
         if method.upper() not in supported_methods:
             return False, f"Unsupported method: {method}"
@@ -650,8 +660,7 @@ class NTRIPHandler:
     def _handle_rtsp_setup(self, mount: str, headers: dict[str, str]) -> None:
         """Handle RTSP SETUP command"""
         if not connection.check_mount_exists(mount):
-            cseq = headers.get("cseq", "1")
-            self._send_response("RTSP/1.0 404 Not Found", additional_headers={"CSeq": cseq})
+            self.send_error_response(404, "Mount point not found")
             return
         transport = headers.get("transport", "RTP/AVP;unicast")
         client_port = "8000-8001"
@@ -661,9 +670,7 @@ class NTRIPHandler:
             except Exception:
                 pass
         session_id = f"{mount}-{int(time.time())}"
-        cseq = headers.get("cseq", "1")
         rtsp_headers = {
-            "CSeq": cseq,
             "Transport": f"RTP/AVP;unicast;client_port={client_port};server_port=8002-8003",
             "Session": session_id,
             "Cache-Control": "no-cache",
@@ -672,10 +679,9 @@ class NTRIPHandler:
 
     def _handle_rtsp_play(self, mount: str, headers: dict[str, str]) -> None:
         """Handle RTSP PLAY command"""
-        cseq, session = headers.get("cseq", "1"), headers.get("session", "")
+        session = headers.get("session", "")
         host = config.settings.network.host if config.settings.network.host != "0.0.0.0" else "localhost"
         rtsp_headers = {
-            "CSeq": cseq,
             "Session": session,
             "Range": "npt=0.000-",
             "RTP-Info": f"url=rtsp://{host}:{config.settings.ntrip.port}/{mount};seq=1;rtptime=0",
@@ -685,19 +691,19 @@ class NTRIPHandler:
 
     def _handle_rtsp_pause(self, mount: str, headers: dict[str, str]) -> None:
         """Handle RTSP PAUSE command"""
-        cseq, session = headers.get("cseq", "1"), headers.get("session", "")
-        self._send_response("RTSP/1.0 200 OK", additional_headers={"CSeq": cseq, "Session": session})
+        session = headers.get("session", "")
+        self._send_response("RTSP/1.0 200 OK", additional_headers={"Session": session})
 
     def _handle_rtsp_teardown(self, mount: str, headers: dict[str, str]) -> None:
         """Handle RTSP TEARDOWN command"""
-        cseq, session = headers.get("cseq", "1"), headers.get("session", "")
-        self._send_response("RTSP/1.0 200 OK", additional_headers={"CSeq": cseq, "Session": session})
+        session = headers.get("session", "")
+        self._send_response("RTSP/1.0 200 OK", additional_headers={"Session": session})
         self._cleanup()
 
     def _handle_rtsp_record(self, mount: str, headers: dict[str, str]) -> None:
         """Handle RTSP RECORD command"""
-        cseq, session = headers.get("cseq", "1"), headers.get("session", "")
-        self._send_response("RTSP/1.0 200 OK", additional_headers={"CSeq": cseq, "Session": session})
+        session = headers.get("session", "")
+        self._send_response("RTSP/1.0 200 OK", additional_headers={"Session": session})
         self.handle_upload("/" + mount, headers)
 
     def _generate_sdp_description(self, mount: str) -> str:
@@ -1063,7 +1069,11 @@ class NTRIPHandler:
         if auth_type in ["digest", "both"]:
             auth_headers.append(f'WWW-Authenticate: Digest realm="{realm}", nonce="{nonce}", algorithm=MD5, qop="auth"')
 
-        if self.ntrip_version == "2.0":
+        if self.protocol_type == "rtsp":
+            self._send_response(
+                "RTSP/1.0 401 Unauthorized", content_type="text/plain", content=message, additional_headers=auth_headers
+            )
+        elif self.ntrip_version == "2.0":
             self._send_response(
                 "HTTP/1.1 401 Unauthorized", content_type="text/plain", content=message, additional_headers=auth_headers
             )
@@ -1089,7 +1099,7 @@ class NTRIPHandler:
             log_error(f"Failed to send v1 server error: {e}", exc_info=True)
 
     def send_error_response(self, code: int, message: str) -> None:
-        """Send an HTTP error response: HTTP/1.1 for v2 clients, HTTP/1.0 for v1."""
+        """Send an error response: RTSP/1.0 for RTSP, HTTP/1.1 for NTRIP v2, HTTP/1.0 for v1."""
         status_messages = {
             400: "Bad Request",
             401: "Unauthorized",
@@ -1100,7 +1110,9 @@ class NTRIPHandler:
             501: "Not Implemented",
         }
         reason = status_messages.get(code, "Error")
-        if self.ntrip_version == "2.0":
+        if self.protocol_type == "rtsp":
+            self._send_response(f"RTSP/1.0 {code} {reason}", content_type="text/plain", content=message)
+        elif self.ntrip_version == "2.0":
             self._send_response(f"HTTP/1.1 {code} {reason}", content_type="text/plain", content=message)
         else:
             try:
@@ -1123,7 +1135,7 @@ class NTRIPHandler:
                 ]
             )
         elif self.protocol_type == "rtsp":
-            headers.extend(["CSeq: 1", f"Session: {id(self)}"])
+            headers.append(f"CSeq: {self.rtsp_cseq}")
         elif self.ntrip_version == "2.0":
             headers.append(NTRIP_V2_VERSION_HEADER)
         headers.extend(
