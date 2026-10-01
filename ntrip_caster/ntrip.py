@@ -893,19 +893,27 @@ class NTRIPHandler:
         except Exception as e:
             logger.log_error(f"Exception receiving RTCM data: {e}", exc_info=True)
         finally:
+            session_socket = self.client_socket
 
             def delayed_cleanup() -> None:
+                metrics.ACTIVE_CONNECTIONS.labels(type="mount").dec()
+                # Release the mount only if this session still holds it: the source
+                # may have reconnected under the same mount within the delay, and the
+                # new session keeps the mount and its buffer.
+                try:
+                    release = connection.get_connection_manager().release_mount(mount, session_socket)
+                except Exception as e:
+                    log_warning(f"Failed to release mount {mount}: {e}", "ntrip")
+                    release = connection.MountRelease.NOT_ONLINE
+                if release is connection.MountRelease.HELD_BY_ANOTHER_SESSION:
+                    log_debug(f"Delayed cleanup for mount {mount} skipped: a newer session holds it", "ntrip")
+                    return
                 try:
                     forwarder.remove_mount_buffer(mount)
                 except Exception as e:
                     log_warning(f"Failed to clean up forwarder buffer: {e}", "ntrip")
-                try:
-                    connection.get_connection_manager().remove_mount_connection(mount)
-                    metrics.ACTIVE_CONNECTIONS.labels(type="mount").dec()
-                except Exception as e:
-                    log_warning(f"Failed to clean up mount connection: {e}")
                 logger.log_mount_operation("disconnected", mount)
-                log_debug(f"Delayed cleanup complete for mount {mount}")
+                log_debug(f"Delayed cleanup complete for mount {mount}", "ntrip")
 
             log_warning(f"Mount point {mount} disconnected, cleaning up in 1.5 seconds")
             cleanup_timer = threading.Timer(1.5, delayed_cleanup)
