@@ -4,6 +4,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -351,7 +352,7 @@ class ConnectionManager:
     ) -> str:
         """Add user connection"""
         with self.user_lock:
-            connection_id = f"{username}_{mount_name}_{int(time.time())}"
+            connection_id = f"{username}_{mount_name}_{uuid.uuid4().hex[:12]}"
 
             socket_info = (
                 "No socket"
@@ -411,11 +412,13 @@ class ConnectionManager:
             for i, conn in enumerate(self.online_users[username]):
                 should_remove = False
 
-                if connection_id and conn["connection_id"] == connection_id:
-                    should_remove = True
-                elif mount_name and conn["mount_name"] == mount_name:
-                    should_remove = True
-                elif not connection_id and not mount_name:
+                # A connection ID names exactly one connection; mount_name only
+                # applies when no ID is given (e.g. an admin dropping a user's mount).
+                if connection_id:
+                    should_remove = conn["connection_id"] == connection_id
+                elif mount_name:
+                    should_remove = conn["mount_name"] == mount_name
+                else:
                     should_remove = True
 
                 if should_remove:
