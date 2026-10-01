@@ -59,7 +59,7 @@ def split_request_head(data: bytes) -> tuple[bytes, bytes] | None:
     return data[:head_end], data[body_start:]
 
 # The RTSP methods the caster implements; any other RTSP method gets 501 Not Implemented.
-RTSP_METHODS = ("DESCRIBE", "SETUP", "PLAY", "PAUSE", "TEARDOWN", "RECORD")
+RTSP_METHODS = ("OPTIONS", "DESCRIBE", "SETUP", "PLAY", "PAUSE", "TEARDOWN", "RECORD")
 
 
 class AntiSpamLogger:
@@ -123,6 +123,9 @@ class NTRIPHandler:
         # Bytes that arrived after the request headers, in the same read: the start of
         # an upload's body, handed to ingest before it reads any more.
         self.pending_body: bytes = b""
+        # Headers for the RTSP 200 that PLAY or RECORD sends once its stream is set up;
+        # set by _handle_rtsp_play/_handle_rtsp_record, read by the success replies.
+        self.rtsp_success_headers: dict[str, str] = {}
         # The CSeq of the RTSP request being answered; every RTSP reply echoes it.
         self.rtsp_cseq: str = "1"
         # Whether this upload's body is HTTP-chunked (it said Transfer-Encoding: chunked).
@@ -443,7 +446,8 @@ class NTRIPHandler:
             return False, "Invalid path format"
 
         if hasattr(self, "protocol_type") and self.protocol_type == "rtsp":
-            if not (path.startswith("/") or path.startswith("rtsp://")):
+            server_wide_options = method.upper() == "OPTIONS" and path == "*"
+            if not (path.startswith("/") or path.startswith("rtsp://") or server_wide_options):
                 return False, "Invalid RTSP path format"
         elif not path.startswith("/"):
             return False, "Invalid path format"
@@ -667,7 +671,10 @@ class NTRIPHandler:
         """Handle OPTIONS request"""
         try:
             logger.log_debug(f"OPTIONS request from {self.client_address}")
-            self._send_response("HTTP/1.1 200 OK", content_type="text/plain", content="")
+            if self.protocol_type == "rtsp":
+                self._send_response("RTSP/1.0 200 OK", additional_headers=[f"Public: {', '.join(RTSP_METHODS)}"])
+            else:
+                self._send_response("HTTP/1.1 200 OK", content_type="text/plain", content="")
             logger.log_debug(f"OPTIONS request handled for {self.client_address}")
         except Exception as e:
             logger.log_error(f"Error handling OPTIONS request from {self.client_address}: {e}", exc_info=True)
@@ -688,11 +695,15 @@ class NTRIPHandler:
                 self.send_error_response(400, "Missing mount point")
                 return
             self.mount = mount
-            auth_header = headers.get("authorization", "")
-            is_valid, message = self.verify_user(mount, auth_header)
-            if not is_valid:
-                self.send_auth_challenge(message)
-                return
+            # PLAY and RECORD authenticate in the download and upload paths, with the
+            # right rules (a rover's download credentials vs a source's), after checking
+            # the mount, and before their one reply.
+            if method.upper() not in ("PLAY", "RECORD"):
+                auth_header = headers.get("authorization", "")
+                is_valid, message = self.verify_user(mount, auth_header)
+                if not is_valid:
+                    self.send_auth_challenge(message)
+                    return
 
             if method.upper() == "DESCRIBE":
                 self._handle_rtsp_describe(mount, headers)
@@ -752,7 +763,9 @@ class NTRIPHandler:
             "Range": "npt=0.000-",
             "RTP-Info": f"url=rtsp://{host}:{config.settings.ntrip.port}/{mount};seq=1;rtptime=0",
         }
-        self._send_response("RTSP/1.0 200 OK", additional_headers=rtsp_headers)
+        # The download path checks the mount and credentials, then sends this 200 (or
+        # an RTSP error instead) as PLAY's one reply.
+        self.rtsp_success_headers = rtsp_headers
         self.handle_download("/" + mount, headers)
 
     def _handle_rtsp_pause(self, mount: str, headers: dict[str, str]) -> None:
@@ -768,8 +781,9 @@ class NTRIPHandler:
 
     def _handle_rtsp_record(self, mount: str, headers: dict[str, str]) -> None:
         """Handle RTSP RECORD command"""
-        session = headers.get("session", "")
-        self._send_response("RTSP/1.0 200 OK", additional_headers={"Session": session})
+        # The upload path checks the mount and credentials, then sends this 200 (or an
+        # RTSP error instead) as RECORD's one reply.
+        self.rtsp_success_headers = {"Session": headers.get("session", "")}
         self.handle_upload("/" + mount, headers)
 
     def _generate_sdp_description(self, mount: str) -> str:
@@ -836,7 +850,7 @@ class NTRIPHandler:
                     "ntrip",
                 )
                 metrics.AUTH_ATTEMPTS.labels(status="failed", type="mount").inc()
-                if self.ntrip_version == "2.0":
+                if self._replies_with_status_codes:
                     self.send_auth_challenge(message)
                 else:
                     self._send_v1_server_error("Bad Password")
@@ -888,7 +902,10 @@ class NTRIPHandler:
         """Handle download request"""
         try:
             if path.strip().lower() in ["/", "", "/sourcetable"]:
-                self._send_mount_list()
+                if self.protocol_type == "rtsp":
+                    self.send_error_response(404, "No sourcetable over RTSP")
+                else:
+                    self._send_mount_list()
                 return
             mount = path.lstrip("/")
             self.mount = mount
@@ -900,7 +917,7 @@ class NTRIPHandler:
                 mount, config.settings.ntrip.mount_data_timeout
             ) and self.db_manager.check_mount_exists_in_db(mount)
             if not mount_available:
-                if self.ntrip_version == "2.0":
+                if self._replies_with_status_codes:
                     self.send_error_response(404, "Mount point not available")
                 else:
                     self._send_mount_list()
@@ -1107,7 +1124,9 @@ class NTRIPHandler:
 
     def send_upload_success_response(self) -> None:
         """Send upload success response"""
-        if self.ntrip_version == "2.0":
+        if self.protocol_type == "rtsp":
+            self._send_response("RTSP/1.0 200 OK", additional_headers=self.rtsp_success_headers)
+        elif self.ntrip_version == "2.0":
             self._send_response("HTTP/1.1 200 OK", additional_headers=["Connection: keep-alive"])
         else:
             try:
@@ -1117,7 +1136,9 @@ class NTRIPHandler:
 
     def send_download_success_response(self) -> None:
         """Send download success response"""
-        if self.ntrip_version == "2.0":
+        if self.protocol_type == "rtsp":
+            self._send_response("RTSP/1.0 200 OK", additional_headers=self.rtsp_success_headers)
+        elif self.ntrip_version == "2.0":
             self._send_response(
                 "HTTP/1.1 200 OK",
                 content_type=NTRIP_V2_STREAM_CONTENT_TYPE,
@@ -1160,8 +1181,8 @@ class NTRIPHandler:
                 log_error(f"Failed to send auth challenge: {e}", exc_info=True)
 
     def _reject_upload_mount(self, code: int, message: str) -> None:
-        """Refuse an upload's mount: an HTTP error for a v2 server, the NTRIP v1 error line otherwise."""
-        if self.ntrip_version == "2.0":
+        """Refuse an upload's mount: an RTSP or HTTP error for RTSP and v2, the NTRIP v1 error line otherwise."""
+        if self._replies_with_status_codes:
             self.send_error_response(code, message)
         else:
             self._send_v1_server_error("Mount Point Taken or Invalid")
@@ -1255,6 +1276,11 @@ class NTRIPHandler:
             self.client_socket.send(response.encode("utf-8"))
         except Exception as e:
             log_error(f"Failed to send response: {e}", exc_info=True)
+
+    @property
+    def _replies_with_status_codes(self) -> bool:
+        """RTSP and NTRIP v2 clients get status-code replies; NTRIP v1 gets sourcetables and ERROR lines."""
+        return self.protocol_type == "rtsp" or self.ntrip_version == "2.0"
 
     def _release_user_slot(self) -> None:
         """Release this download's per-user slot, if it holds one. Safe to call more than once."""
