@@ -7,12 +7,21 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from threading import Lock, RLock
 from typing import Any
 
 from . import config
 from .logger import log_debug, log_error, log_info, log_warning
 from .rtcm2_manager import parser_manager as rtcm_manager
+
+
+class MountRelease(Enum):
+    """What happened when a session released its mount."""
+
+    RELEASED = "released"  # this session still held the mount; it is now offline
+    NOT_ONLINE = "not_online"  # the mount was already gone (zombie cleanup, admin delete, ...)
+    HELD_BY_ANOTHER_SESSION = "held_by_another_session"  # the source reconnected; the new session keeps it
 
 
 @dataclass
@@ -224,6 +233,22 @@ class ConnectionManager:
             self.print_active_connections()
 
             return True, "Mount point connected successfully"
+
+    def release_mount(self, mount_name: str, client_socket: Any) -> MountRelease:
+        """Release a mount on behalf of the session that owns ``client_socket``.
+
+        The mount is removed only if that session is still the one registered for
+        it. A session whose source has since reconnected under the same mount must
+        not tear the newer session down.
+        """
+        with self.mount_lock:
+            mount_info = self.online_mounts.get(mount_name)
+            if mount_info is None:
+                return MountRelease.NOT_ONLINE
+            if mount_info.client_socket is not client_socket:
+                return MountRelease.HELD_BY_ANOTHER_SESSION
+            self.remove_mount_connection(mount_name)
+            return MountRelease.RELEASED
 
     def remove_mount_connection(self, mount_name: str, reason: str = "Active disconnect") -> bool:
         """Remove mount point connection (source side disconnected)"""
