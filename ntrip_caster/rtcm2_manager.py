@@ -27,8 +27,8 @@ class RTCM2ParserManager:
         mode: str = "str_fix",
         duration: int = 30,
         push_callback: Callable[[dict[str, Any]], None] | None = None,
-    ) -> bool:
-        """Start a parser"""
+    ) -> Any | None:
+        """Start a parser for the mount, replacing any running one; return it, or None on failure."""
         with self.lock:
             if mount_name in self.parsers:
                 self.stop_parser(mount_name)
@@ -47,17 +47,18 @@ class RTCM2ParserManager:
 
                 self.parsers[mount_name] = parser
                 log_info(f"Started RTCM data parsing [Mount: {mount_name}, Mode: {mode}]")
-                return True
+                return parser
             except Exception as e:
                 log_error(f"Failed to start RTCM parsing [Mount: {mount_name}]: {e!s}")
-                return False
+                return None
 
-    def stop_parser(self, mount_name: str) -> None:
-        """Stop a parser"""
+    def stop_parser(self, mount_name: str, parser: Any | None = None) -> None:
+        """Stop the mount's parser. With ``parser``, only if it is still the mount's current one."""
         with self.lock:
+            if parser is not None and self.parsers.get(mount_name) is not parser:
+                return
             if mount_name in self.parsers:
-                parser = self.parsers[mount_name]
-                parser.stop()
+                self.parsers[mount_name].stop()
                 del self.parsers[mount_name]
 
                 if mount_name in self.web_parsers:

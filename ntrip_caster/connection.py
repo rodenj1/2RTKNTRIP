@@ -584,49 +584,68 @@ class ConnectionManager:
             log_warning(f"Cannot start STR correction, mount point {mount_name} is not online")
             return
 
-        success = rtcm_manager.start_parser(
+        parser = rtcm_manager.start_parser(
             mount_name=mount_name, mode="str_fix", duration=config.settings.rtcm.parse_duration
         )
 
-        if not success:
+        if not parser:
             log_error(f"Failed to start STR correction parsing for mount {mount_name}")
             return
 
         log_info(
             f"STR correction parsing started for mount {mount_name}, will correct STR table in {config.settings.rtcm.parse_duration} seconds"
         )
+        # This correction belongs to this session (its mount record) and the parser it
+        # started. If the source reconnects meanwhile, the new session has its own record
+        # and parser, which this correction must neither read, write nor stop.
+        session = self.online_mounts.get(mount_name)
 
         def wait_and_correct() -> None:
             log_debug(f"Waiting for STR correction complete for mount {mount_name}")
             time.sleep(config.settings.rtcm.parse_duration + 5)
-            log_debug(f"Wait complete, getting parsing results for mount {mount_name}")
 
-            parse_result = rtcm_manager.get_result(mount_name)
-            log_debug(f"Got parsing results for mount {mount_name}: {parse_result is not None}")
-
-            if parse_result:
-                log_debug(f"Parsing results for mount {mount_name}: {parse_result}")
-                self._process_str_data(mount_name, parse_result, mode="correct")
+            if self.online_mounts.get(mount_name) is not session:
+                log_debug(f"Mount {mount_name} reconnected or went offline; skipping its old STR correction")
             else:
-                log_warning(f"No STR correction results obtained for mount {mount_name}")
-                log_debug(
-                    f"STR correction failed - Mount: {mount_name}. Possible reasons: Timeout, insufficient data, or parser error."
-                )
+                # The mount's current parser holds this session's data, whichever parser it
+                # is (the web view's live parser may have replaced the STR one).
+                parse_result = rtcm_manager.get_result(mount_name)
+                log_debug(f"Got parsing results for mount {mount_name}: {parse_result is not None}")
+                if parse_result:
+                    log_debug(f"Parsing results for mount {mount_name}: {parse_result}")
+                    self._process_str_data(mount_name, parse_result, mode="correct", session=session)
+                else:
+                    log_warning(f"No STR correction results obtained for mount {mount_name}")
+                    log_debug(
+                        f"STR correction failed - Mount: {mount_name}. Possible reasons: Timeout, insufficient data, or parser error."
+                    )
 
-            log_debug(f"Stopping parser for mount {mount_name}")
-            rtcm_manager.stop_parser(mount_name)
+            # Stop only the parser this correction started, never a newer session's or the web view's.
+            rtcm_manager.stop_parser(mount_name, parser)
             log_debug(f"STR correction process completed for mount {mount_name}")
 
         threading.Thread(target=wait_and_correct, daemon=True).start()
 
-    def _process_str_data(self, mount_name: str, parse_result: dict[str, Any], mode: str = "correct") -> None:
-        """Unified STR processing function: supports initial generation, correction, and regeneration modes"""
+    def _process_str_data(
+        self,
+        mount_name: str,
+        parse_result: dict[str, Any],
+        mode: str = "correct",
+        session: MountInfo | None = None,
+    ) -> None:
+        """Unified STR processing function: supports initial generation, correction, and regeneration modes.
+
+        With ``session``, the STR is only updated if that session still holds the mount.
+        """
         log_debug(f"Starting STR processing [Mount: {mount_name}, Mode: {mode}]")
         log_debug(f"Parsing details: {parse_result}")
 
         with self.mount_lock:
             if mount_name not in self.online_mounts:
                 log_debug(f"Mount point {mount_name} is not online, cannot process STR")
+                return
+            if session is not None and self.online_mounts[mount_name] is not session:
+                log_debug(f"Mount point {mount_name} is held by a newer session; not applying an old STR result")
                 return
 
             mount_info = self.online_mounts[mount_name]
