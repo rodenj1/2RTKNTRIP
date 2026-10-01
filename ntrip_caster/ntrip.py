@@ -823,11 +823,12 @@ class NTRIPHandler:
                 return
             mount = path.lstrip("/")
             self.mount = mount
-            # A mount that is unknown, or has no source online, can't be served; say
-            # so before authenticating, so the client isn't told its credentials are
-            # wrong or left waiting on a silent stream. Both cases get one reply.
-            mount_available = connection.get_connection_manager().is_mount_online(
-                mount
+            # A mount that is unknown, has no source online, or whose source has gone
+            # quiet can't be served; say so before authenticating, so the client isn't
+            # told its credentials are wrong or left waiting on a silent stream. All
+            # these cases get one reply.
+            mount_available = connection.get_connection_manager().check_mount_live(
+                mount, config.settings.ntrip.mount_data_timeout
             ) and self.db_manager.check_mount_exists_in_db(mount)
             if not mount_available:
                 if self.ntrip_version == "2.0":

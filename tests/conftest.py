@@ -81,6 +81,7 @@ def ntrip_reply(mocker: MockerFixture) -> NtripReply:
         occupied_by: str | None = None,
     ) -> bytes:
         manager.is_mount_online.return_value = mount_online
+        manager.check_mount_live.return_value = mount_online
         conn.check_mount_exists.return_value = mount_exists
         manager.get_mount_info.return_value = {"ip_address": occupied_by} if occupied_by else None
         verify_user.return_value = (True, "ok") if authorized else (False, "Invalid credentials")
